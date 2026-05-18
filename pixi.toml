@@ -1,0 +1,17 @@
+[workspace]
+name = "needlestack"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[dependencies]
+python = "3.12.*"
+pip = "*"
+
+[pypi-dependencies]
+needlestack = { path = ".", editable = true }
+
+[tasks]
+install = "pip install -e '.[test]'"
+serve = "needlestack serve"
+test = "python -m pytest"

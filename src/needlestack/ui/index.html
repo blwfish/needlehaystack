@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>needlestack</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #161616;
+  color: #e0e0e0;
+  min-height: 100vh;
+}
+
+header {
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid #2a2a2a;
+  position: sticky;
+  top: 0;
+  background: #161616;
+  z-index: 10;
+}
+
+.title {
+  font-size: 0.85rem;
+  letter-spacing: 0.25em;
+  color: #555;
+  text-transform: uppercase;
+  margin-bottom: 0.75rem;
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 760px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: #777;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.checkbox-label:hover { color: #aaa; }
+
+.checkbox-label input[type="checkbox"] {
+  accent-color: #888;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+input[type="text"] {
+  flex: 1;
+  padding: 0.65rem 1rem;
+  font-size: 1rem;
+  background: #222;
+  border: 1px solid #383838;
+  border-radius: 6px;
+  color: #e0e0e0;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input[type="text"]:focus { border-color: #666; }
+
+button {
+  padding: 0.65rem 1.4rem;
+  font-size: 0.9rem;
+  background: #333;
+  border: 1px solid #444;
+  border-radius: 6px;
+  color: #ccc;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+button:hover { background: #444; }
+
+#status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: #555;
+  padding: 0.6rem 0 0;
+  min-height: 1.4rem;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #444;
+  border-top-color: #888;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+  display: none;
+}
+
+#status.busy .spinner { display: block; }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+#grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 3px;
+  padding: 1rem;
+}
+
+.card {
+  position: relative;
+  aspect-ratio: 1;
+  background: #222;
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 0.2s;
+}
+
+.card:hover img { opacity: 0.7; }
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 50%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0.5rem;
+}
+
+.card:hover .overlay { opacity: 1; }
+
+.caption {
+  font-size: 0.68rem;
+  color: #ddd;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.score {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background: rgba(0,0,0,0.55);
+  color: #888;
+  font-size: 0.62rem;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.filename {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.7);
+  color: #bbb;
+  font-size: 0.65rem;
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: none;
+}
+
+body.show-filenames .filename { display: block; }
+body.show-filenames .card:hover .overlay { padding-bottom: 1.4rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">needlestack</div>
+  <div class="search-row">
+    <input id="q" type="text" placeholder="Describe what you're looking for…" autofocus>
+    <button id="btn">Search</button>
+    <label class="checkbox-label">
+      <input type="checkbox" id="show-filenames"> filenames
+    </label>
+  </div>
+  <div id="status"><div class="spinner"></div><span id="status-text"></span></div>
+</header>
+
+<div id="grid"></div>
+
+<script>
+const q = document.getElementById('q');
+const btn = document.getElementById('btn');
+const grid = document.getElementById('grid');
+const status = document.getElementById('status');
+const statusText = document.getElementById('status-text');
+const showFilenames = document.getElementById('show-filenames');
+
+btn.addEventListener('click', doSearch);
+q.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+showFilenames.addEventListener('change', () => {
+  document.body.classList.toggle('show-filenames', showFilenames.checked);
+});
+
+function setStatus(msg, busy = false) {
+  statusText.textContent = msg;
+  status.classList.toggle('busy', busy);
+}
+
+async function doSearch() {
+  const query = q.value.trim();
+  if (!query) return;
+
+  btn.disabled = true;
+  grid.innerHTML = '';
+  setStatus('Expanding query…', true);
+
+  try {
+    const expandRes = await fetch('/expand', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (!expandRes.ok) throw new Error(expandRes.statusText);
+    const { terms } = await expandRes.json();
+
+    setStatus('Searching…', true);
+
+    const res = await fetch('/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit: 40, terms }),
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    const results = await res.json();
+
+    setStatus(
+      results.length
+        ? `${results.length} result${results.length === 1 ? '' : 's'}`
+        : 'No results found.'
+    );
+
+    for (const r of results) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.title = r.path;
+
+      if (r.thumbnail) {
+        const img = document.createElement('img');
+        img.src = `data:image/jpeg;base64,${r.thumbnail}`;
+        img.alt = r.caption || '';
+        card.appendChild(img);
+      }
+
+      const overlay = document.createElement('div');
+      overlay.className = 'overlay';
+      const cap = document.createElement('div');
+      cap.className = 'caption';
+      cap.textContent = r.caption || '';
+      overlay.appendChild(cap);
+      card.appendChild(overlay);
+
+      const sc = document.createElement('div');
+      sc.className = 'score';
+      sc.textContent = r.score.toFixed(2);
+      card.appendChild(sc);
+
+      const fn = document.createElement('div');
+      fn.className = 'filename';
+      fn.textContent = r.path.split('/').pop();
+      card.appendChild(fn);
+
+      card.addEventListener('click', () => {
+        fetch(`/open/${r.id}`, { method: 'POST' });
+      });
+
+      grid.appendChild(card);
+    }
+  } catch (e) {
+    setStatus(`Error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
