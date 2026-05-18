@@ -229,17 +229,24 @@ SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="\$HOME/.needlestack"
 LOG_FILE="\$LOG_DIR/needlestack.log"
 mkdir -p "\$LOG_DIR"
-
-# Log session start
 echo "=== needlestack started \$(date) ===" >> "\$LOG_FILE"
-
-# Tee output to log while showing on screen
 exec > >(tee -a "\$LOG_FILE") 2>&1
 
 cd "\$SCRIPT_DIR"
 export PATH="\$HOME/.pixi/bin:\$PATH"
 
-echo "Starting needlestack..."
+PORT=8484
+
+# If needlestack is already running on the port, just open the browser
+if lsof -i ":\$PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    if curl -sf --max-time 2 "http://localhost:\$PORT/" | grep -qi needlestack; then
+        echo "needlestack already running — opening browser."
+        open "http://localhost:\$PORT"
+        exit 0
+    else
+        echo "Port \$PORT is in use by another application — needlestack will try a nearby port."
+    fi
+fi
 
 # Start Ollama if needed
 if ! curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
@@ -260,8 +267,7 @@ fi
 if ! pixi run needlestack serve; then
     echo ""
     echo "needlestack exited unexpectedly."
-    echo ""
-    echo "If this keeps happening, send this log file to whoever gave you needlestack:"
+    echo "If this keeps happening, send this log to whoever gave you needlestack:"
     echo "\$LOG_FILE"
     echo ""
     read -r -p "Press Enter to close..."

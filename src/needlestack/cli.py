@@ -124,6 +124,34 @@ def serve(db: str, port: int, model: str, ollama: str, no_browser: bool) -> None
     init(store, embedder, UI_PATH, db_path=db_path,
          ollama_url=ollama, ollama_model=model, setup_mode=setup_mode)
 
+    # If port is in use, check if it's already us — if so, just open the browser
+    import socket
+    import httpx as _httpx
+
+    def _port_free(p: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", p)) != 0
+
+    if not _port_free(port):
+        try:
+            resp = _httpx.get(f"http://127.0.0.1:{port}/", timeout=2.0)
+            if "needlestack" in resp.text.lower():
+                console.print(f"[dim]needlestack already running on port {port} — opening browser.[/dim]")
+                webbrowser.open(f"http://localhost:{port}")
+                return
+        except Exception:
+            pass
+        # Something else owns the port — find the next free one
+        original = port
+        for candidate in range(port + 1, port + 20):
+            if _port_free(candidate):
+                port = candidate
+                break
+        else:
+            console.print(f"[red]Port {original} is in use and no free port found nearby.[/red]")
+            sys.exit(1)
+        console.print(f"[yellow]Port {original} in use — using {port} instead.[/yellow]")
+
     url = f"http://localhost:{port}"
     if not no_browser:
         def _open():
@@ -133,4 +161,5 @@ def serve(db: str, port: int, model: str, ollama: str, no_browser: bool) -> None
 
     console.print(f"Listening on [cyan]{url}[/cyan]  (Ctrl+C to stop)")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
-    store.close()
+    if store:
+        store.close()

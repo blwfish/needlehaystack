@@ -292,6 +292,21 @@ $launcherContent = @"
 cd /d "%~dp0"
 set PATH=%USERPROFILE%\.pixi\bin;%PATH%
 
+set PORT=8484
+
+REM If needlestack is already running on the port, just open the browser
+curl -sf --max-time 2 http://localhost:%PORT%/ 2>nul | findstr /i "needlestack" >nul 2>&1
+if not errorlevel 1 (
+    echo needlestack already running -- opening browser.
+    start "" "http://localhost:%PORT%"
+    exit /b 0
+)
+
+netstat -an 2>nul | findstr ":%PORT% " | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo Port %PORT% is in use by another application -- needlestack will try a nearby port.
+)
+
 echo Starting needlestack...
 
 REM Check Ollama

@@ -67,7 +67,7 @@ class SearchRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root() -> str:
-    if _setup_mode or (_store is not None and _store.count() == 0 and not _index_state.done):
+    if _setup_mode or _index_state.running or (_store is not None and _store.count() == 0 and not _index_state.done):
         return (_ui_path / "setup.html").read_text()
     return (_ui_path / "index.html").read_text()
 
@@ -185,7 +185,7 @@ async def sync_status() -> dict:
     if not root.exists():
         return {"new": 0, "removed": 0, "root": root_str, "root_missing": True}
     new_count = _store.count_unindexed(root)
-    return {"new": new_count, "removed": 0, "root": root_str}
+    return {"new": new_count, "removed": 0, "root": root_str, "count": _store.count()}
 
 
 @app.get("/api/setup/progress")
@@ -246,5 +246,22 @@ async def open_image(image_id: int) -> dict:
     rows = _store.get_by_ids([image_id])
     if not rows:
         raise HTTPException(404)
-    subprocess.Popen(["open", "-R", rows[0]["path"]])  # reveal in Finder
+    path = rows[0]["path"]
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    elif sys.platform == "win32":
+        subprocess.Popen(["cmd", "/c", "start", "", path], shell=False)
+    return {"status": "ok"}
+
+
+@app.post("/reveal/{image_id}")
+async def reveal_image(image_id: int) -> dict:
+    rows = _store.get_by_ids([image_id])
+    if not rows:
+        raise HTTPException(404)
+    path = rows[0]["path"]
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", path])
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", "/select,", path])
     return {"status": "ok"}

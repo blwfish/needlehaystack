@@ -190,12 +190,31 @@ button:hover { background: #444; }
 
 body.show-filenames .filename { display: block; }
 body.show-filenames .card:hover .overlay { padding-bottom: 1.4rem; }
+
+.reveal-btn {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #aaa;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  line-height: 1.4;
+}
+
+.card:hover .reveal-btn { opacity: 1; }
+.reveal-btn:hover { background: rgba(0,0,0,0.8); color: #ddd; }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="title">needlestack</div>
+  <div class="title">needlestack<span id="photo-count"></span></div>
   <div class="search-row">
     <input id="q" type="text" placeholder="Describe what you're looking for…" autofocus>
     <button id="btn">Search</button>
@@ -228,6 +247,10 @@ showFilenames.addEventListener('change', () => {
   document.body.classList.toggle('show-filenames', showFilenames.checked);
 });
 
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { q.value = ''; grid.innerHTML = ''; setStatus(''); }
+});
+
 // Check for new photos on load (runs in background, doesn't block search)
 const banner = document.getElementById('new-photos-banner');
 const bannerMsg = document.getElementById('banner-msg');
@@ -237,6 +260,9 @@ fetch('/api/sync-status')
   .then(r => r.json())
   .then(d => {
     _indexedRoot = d.root;
+    if (d.count) {
+      document.getElementById('photo-count').textContent = `  ·  ${d.count.toLocaleString()} photos`;
+    }
     if (d.new > 0) {
       bannerMsg.textContent = `${d.new} new photo${d.new === 1 ? '' : 's'} found since last index.`;
       banner.style.display = 'flex';
@@ -331,6 +357,15 @@ async function doSearch() {
       card.addEventListener('click', () => {
         fetch(`/open/${r.id}`, { method: 'POST' });
       });
+
+      const reveal = document.createElement('button');
+      reveal.className = 'reveal-btn';
+      reveal.textContent = 'show in Finder';
+      reveal.addEventListener('click', e => {
+        e.stopPropagation();
+        fetch(`/reveal/${r.id}`, { method: 'POST' });
+      });
+      card.appendChild(reveal);
 
       grid.appendChild(card);
     }
