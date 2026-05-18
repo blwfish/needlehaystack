@@ -8,6 +8,8 @@ Find photos by describing what's in them — fully local, no cloud, no account.
 
 needlestack indexes a folder of images using a local vision-language model to write a rich description of each photo, then searches those descriptions with a combination of full-text search and CLIP embeddings. Everything runs on your machine.
 
+**Your photos never leave your computer.** All AI processing happens locally via [Ollama](https://ollama.com) — no account, no upload, no cloud. The AI interprets your search query and generates captions; that's it. Nothing goes anywhere.
+
 ---
 
 ## How it works

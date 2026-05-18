@@ -4,6 +4,11 @@ Find photos by describing what's in them.
 Type "steam locomotive pulling freight through mountain pass" and needlestack
 finds your photos that match — no folders to browse, no filenames to remember.
 
+**Your photos never leave your computer.** needlestack runs entirely on your
+Mac — no account, no internet connection needed after setup, no uploads.
+The AI runs locally and is only used to interpret your search and describe
+what's in each photo. Nothing is sent anywhere.
+
 ---
 
 ## What you need
