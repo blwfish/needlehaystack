@@ -1,5 +1,8 @@
 import base64
 import subprocess
+import sys
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -15,17 +18,45 @@ app = FastAPI(title="needlestack")
 _store: Store | None = None
 _embedder: Embedder | None = None
 _ui_path: Path | None = None
+_db_path: Path | None = None
 _ollama_url: str = "http://localhost:11434"
 _ollama_model: str = "llava:13b"
+_setup_mode: bool = False
 
 
-def init(store: Store, embedder: Embedder, ui_path: Path, ollama_url: str, ollama_model: str) -> None:
-    global _store, _embedder, _ui_path, _ollama_url, _ollama_model
+@dataclass
+class _IndexState:
+    running: bool = False
+    done: bool = False
+    error: str = ""
+    total: int = 0
+    indexed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    current: str = ""
+
+
+_index_state = _IndexState()
+_index_lock = threading.Lock()
+
+
+def init(
+    store: Store | None,
+    embedder: Embedder | None,
+    ui_path: Path,
+    db_path: Path,
+    ollama_url: str,
+    ollama_model: str,
+    setup_mode: bool = False,
+) -> None:
+    global _store, _embedder, _ui_path, _db_path, _ollama_url, _ollama_model, _setup_mode
     _store = store
     _embedder = embedder
     _ui_path = ui_path
+    _db_path = db_path
     _ollama_url = ollama_url
     _ollama_model = ollama_model
+    _setup_mode = setup_mode
 
 
 class SearchRequest(BaseModel):
@@ -36,7 +67,125 @@ class SearchRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root() -> str:
+    if _setup_mode or (_store is not None and _store.count() == 0 and not _index_state.done):
+        return (_ui_path / "setup.html").read_text()
     return (_ui_path / "index.html").read_text()
+
+
+# --- setup wizard endpoints ---
+
+@app.get("/api/setup/browse")
+async def browse_folder() -> dict:
+    """Open a native folder picker and return the selected path."""
+    try:
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                ["osascript", "-e",
+                 'POSIX path of (choose folder with prompt "Select your photos folder:")'],
+                capture_output=True, text=True, timeout=60,
+            )
+            path = result.stdout.strip()
+        elif sys.platform == "win32":
+            script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "$d.Description = 'Select your photos folder';"
+                "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True, text=True, timeout=60,
+            )
+            path = result.stdout.strip()
+        else:
+            return {"error": "Folder picker not supported on this platform"}
+
+        if not path:
+            return {"cancelled": True}
+        return {"path": path}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/setup/start")
+async def start_indexing(req: dict) -> dict:
+    """Kick off indexing in a background thread."""
+    global _store, _embedder, _setup_mode
+
+    folder = req.get("folder", "").strip()
+    if not folder:
+        raise HTTPException(400, "No folder provided")
+
+    root = Path(folder)
+    if not root.exists():
+        raise HTTPException(400, f"Folder not found: {folder}")
+
+    with _index_lock:
+        if _index_state.running:
+            return {"status": "already_running"}
+        _index_state.running = True
+        _index_state.done = False
+        _index_state.error = ""
+        _index_state.total = 0
+        _index_state.indexed = 0
+        _index_state.skipped = 0
+        _index_state.failed = 0
+        _index_state.current = ""
+
+    def _run():
+        global _store, _embedder, _setup_mode
+        try:
+            from .captioner import Captioner
+            from .indexer import index_directory
+
+            _db_path.parent.mkdir(parents=True, exist_ok=True)
+            store = Store(_db_path)
+            captioner = Captioner(model=_ollama_model, base_url=_ollama_url)
+            embedder = Embedder()
+
+            def _progress(total, indexed, skipped, failed, current):
+                with _index_lock:
+                    _index_state.total = total
+                    _index_state.indexed = indexed
+                    _index_state.skipped = skipped
+                    _index_state.failed = failed
+                    _index_state.current = current
+
+            index_directory(root, store, captioner, embedder, on_progress=_progress)
+
+            captioner.close()
+
+            with _index_lock:
+                _index_state.running = False
+                _index_state.done = True
+
+            # Switch server to search mode
+            _store = store
+            _embedder = embedder
+            _setup_mode = False
+
+        except Exception as e:
+            with _index_lock:
+                _index_state.running = False
+                _index_state.error = str(e)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+
+@app.get("/api/setup/progress")
+async def index_progress() -> dict:
+    with _index_lock:
+        return {
+            "running": _index_state.running,
+            "done": _index_state.done,
+            "error": _index_state.error,
+            "total": _index_state.total,
+            "indexed": _index_state.indexed,
+            "skipped": _index_state.skipped,
+            "failed": _index_state.failed,
+            "current": _index_state.current,
+        }
 
 
 @app.post("/expand")

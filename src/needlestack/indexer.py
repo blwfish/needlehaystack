@@ -65,33 +65,55 @@ def index_directory(
     captioner: Captioner,
     embedder: Embedder,
     force: bool = False,
+    on_progress: "Callable | None" = None,
 ) -> tuple[int, int, int]:
-    """Index a directory. Returns (indexed, skipped, failed)."""
+    """Index a directory. Returns (indexed, skipped, failed).
+
+    on_progress(total, indexed, skipped, failed, current_filename) is called
+    after each image when provided — used by the setup wizard for browser polling.
+    """
     images = find_images(root)
     indexed = skipped = failed = 0
+    silent = on_progress is not None
 
-    with Progress(
+    def _notify(current: str = ""):
+        if on_progress:
+            on_progress(len(images), indexed, skipped, failed, current)
+
+    _notify()
+
+    progress_ctx = Progress(
         SpinnerColumn(),
         "[progress.description]{task.description}",
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-    ) as progress:
-        task = progress.add_task("Indexing", total=len(images))
+    ) if not silent else None
+
+    def _run():
+        nonlocal indexed, skipped, failed
+
+        task = progress_ctx.add_task("Indexing", total=len(images)) if progress_ctx else None
 
         for path in images:
-            progress.update(task, description=f"[cyan]{path.name[:40]}[/cyan]")
+            if progress_ctx:
+                progress_ctx.update(task, description=f"[cyan]{path.name[:40]}[/cyan]")
+
             hash_ = _file_hash(path)
 
             if not force and store.get_hash(str(path)) == hash_:
                 skipped += 1
-                progress.advance(task)
+                if progress_ctx:
+                    progress_ctx.advance(task)
+                _notify(path.name)
                 continue
 
             image = _load_image(path)
             if image is None:
                 failed += 1
-                progress.advance(task)
+                if progress_ctx:
+                    progress_ctx.advance(task)
+                _notify(path.name)
                 continue
 
             try:
@@ -101,9 +123,18 @@ def index_directory(
                 store.upsert(str(path), hash_, caption, embedding, thumb)
                 indexed += 1
             except Exception as e:
-                progress.log(f"[red]Failed[/red] {path.name}: {e}")
+                if progress_ctx:
+                    progress_ctx.log(f"[red]Failed[/red] {path.name}: {e}")
                 failed += 1
 
-            progress.advance(task)
+            if progress_ctx:
+                progress_ctx.advance(task)
+            _notify(path.name)
+
+    if progress_ctx:
+        with progress_ctx:
+            _run()
+    else:
+        _run()
 
     return indexed, skipped, failed

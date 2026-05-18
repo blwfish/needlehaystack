@@ -102,19 +102,20 @@ def serve(db: str, port: int, model: str, ollama: str, no_browser: bool) -> None
     from .store import Store
 
     db_path = Path(db)
-    if not db_path.exists():
-        console.print(
-            f"[red]No index found at {db_path}.[/red]\n"
-            "Run [cyan]needlestack index <directory>[/cyan] first."
-        )
-        sys.exit(1)
+    setup_mode = not db_path.exists()
 
-    store = Store(db_path)
-    n = store.count()
-    console.print(f"[green]needlestack[/green]  {n} photos indexed")
+    if setup_mode:
+        console.print("[green]needlestack[/green]  no index yet — opening setup wizard")
+        store = None
+        embedder = None
+    else:
+        store = Store(db_path)
+        n = store.count()
+        console.print(f"[green]needlestack[/green]  {n} photos indexed")
+        embedder = Embedder()
 
-    embedder = Embedder()
-    init(store, embedder, UI_PATH, ollama_url=ollama, ollama_model=model)
+    init(store, embedder, UI_PATH, db_path=db_path,
+         ollama_url=ollama, ollama_model=model, setup_mode=setup_mode)
 
     url = f"http://localhost:{port}"
     if not no_browser:
