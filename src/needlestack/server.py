@@ -152,7 +152,7 @@ async def start_indexing(req: dict) -> dict:
                     _index_state.current = current
 
             index_directory(root, store, captioner, embedder, on_progress=_progress)
-
+            store.set_config("indexed_root", str(root.resolve()))
             captioner.close()
 
             with _index_lock:
@@ -171,6 +171,21 @@ async def start_indexing(req: dict) -> dict:
 
     threading.Thread(target=_run, daemon=True).start()
     return {"status": "started"}
+
+
+@app.get("/api/sync-status")
+async def sync_status() -> dict:
+    """Check for new or missing files since last index."""
+    if _store is None:
+        return {"new": 0, "removed": 0, "root": None}
+    root_str = _store.get_config("indexed_root")
+    if not root_str:
+        return {"new": 0, "removed": 0, "root": None}
+    root = Path(root_str)
+    if not root.exists():
+        return {"new": 0, "removed": 0, "root": root_str, "root_missing": True}
+    new_count = _store.count_unindexed(root)
+    return {"new": new_count, "removed": 0, "root": root_str}
 
 
 @app.get("/api/setup/progress")

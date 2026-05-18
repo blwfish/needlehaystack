@@ -206,6 +206,12 @@ body.show-filenames .card:hover .overlay { padding-bottom: 1.4rem; }
   <div id="status"><div class="spinner"></div><span id="status-text"></span></div>
 </header>
 
+<div id="new-photos-banner" style="display:none; background:#1e2e1e; border-bottom:1px solid #2a4a2a; padding:0.6rem 1rem; font-size:0.82rem; color:#8fc88f; display:none; align-items:center; gap:1rem;">
+  <span id="banner-msg"></span>
+  <button onclick="reindex()" style="padding:0.3rem 0.8rem; font-size:0.78rem; background:#2a4a2a; border-color:#3a6a3a; color:#8fc88f;">Re-index now</button>
+  <button onclick="dismissBanner()" style="padding:0.3rem 0.8rem; font-size:0.78rem;">Dismiss</button>
+</div>
+
 <div id="grid"></div>
 
 <script>
@@ -221,6 +227,38 @@ q.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
 showFilenames.addEventListener('change', () => {
   document.body.classList.toggle('show-filenames', showFilenames.checked);
 });
+
+// Check for new photos on load (runs in background, doesn't block search)
+const banner = document.getElementById('new-photos-banner');
+const bannerMsg = document.getElementById('banner-msg');
+let _indexedRoot = null;
+
+fetch('/api/sync-status')
+  .then(r => r.json())
+  .then(d => {
+    _indexedRoot = d.root;
+    if (d.new > 0) {
+      bannerMsg.textContent = `${d.new} new photo${d.new === 1 ? '' : 's'} found since last index.`;
+      banner.style.display = 'flex';
+    }
+  })
+  .catch(() => {});
+
+function dismissBanner() {
+  banner.style.display = 'none';
+}
+
+function reindex() {
+  if (_indexedRoot) {
+    fetch('/api/setup/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder: _indexedRoot }),
+    }).then(() => { location.href = '/'; });
+  } else {
+    location.href = '/';
+  }
+}
 
 function setStatus(msg, busy = false) {
   statusText.textContent = msg;

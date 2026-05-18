@@ -5,6 +5,11 @@ from pathlib import Path
 import numpy as np
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS config (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS images (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     path        TEXT UNIQUE NOT NULL,
@@ -130,6 +135,35 @@ class Store:
             "SELECT thumbnail FROM images WHERE id = ?", (image_id,)
         ).fetchone()
         return row[0] if row else None
+
+    def get_config(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_config(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+
+    def remove_missing(self) -> int:
+        """Delete index entries whose files no longer exist. Returns count removed."""
+        paths = self.conn.execute("SELECT id, path FROM images").fetchall()
+        missing_ids = [row[0] for row in paths if not Path(row[1]).exists()]
+        if missing_ids:
+            placeholders = ",".join("?" * len(missing_ids))
+            self.conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", missing_ids)
+            self.conn.commit()
+        return len(missing_ids)
+
+    def count_unindexed(self, root: Path) -> int:
+        """Count image files in root that are not yet in the index."""
+        from .indexer import find_images, IMAGE_EXTENSIONS
+        indexed = set(
+            row[0] for row in self.conn.execute("SELECT path FROM images").fetchall()
+        )
+        return sum(1 for p in find_images(root) if str(p) not in indexed)
 
     def close(self) -> None:
         self.conn.close()

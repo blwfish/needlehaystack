@@ -52,6 +52,7 @@ def index(directory: Path, db: str, model: str, ollama: str, force: bool) -> Non
         console.print(f"  resuming — [dim]{store.count()} already indexed[/dim]")
 
     indexed, skipped, failed = index_directory(directory, store, captioner, embedder, force=force)
+    store.set_config("indexed_root", str(directory.resolve()))
 
     console.print(
         f"\n[green]Done.[/green]  "
@@ -110,6 +111,12 @@ def serve(db: str, port: int, model: str, ollama: str, no_browser: bool) -> None
         embedder = None
     else:
         store = Store(db_path)
+
+        # Silently remove index entries for deleted files
+        removed = store.remove_missing()
+        if removed:
+            console.print(f"[dim]Removed {removed} deleted files from index.[/dim]")
+
         n = store.count()
         console.print(f"[green]needlestack[/green]  {n} photos indexed")
         embedder = Embedder()
