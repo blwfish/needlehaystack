@@ -45,8 +45,11 @@ disconnect from the internet after installation and everything will still work.
    Move it somewhere you won't accidentally delete it — your home folder or
    Documents are good choices. **Do not move it after installing.**
 4. Open the **needlestack-main** folder and double-click **install-mac.sh**
-5. If macOS says it can't open the file, right-click it and choose **Open**,
-   then click **Open** again in the dialog that appears
+5. If macOS says it can't open the file because it's from an unidentified
+   developer, try right-clicking it and choosing **Open**, then click **Open**
+   again in the dialog that appears. If macOS has already blocked it, open
+   **System Settings → Privacy & Security**, scroll to the bottom, and click
+   **Open Anyway** next to the needlestack entry.
 6. A Terminal window will open and walk you through the rest
 
 The installer will download the AI model (about 8 GB) — this is the part that
@@ -79,7 +82,9 @@ just run the same command again. It picks up where it left off.
 
 Double-click **Start Needlestack.command** in the needlestack-main folder.
 The first time, macOS will warn you — right-click it and choose **Open**,
-then click **Open** in the dialog.
+then click **Open** in the dialog. If macOS has already blocked it, open
+**System Settings → Privacy & Security**, scroll to the bottom, and click
+**Open Anyway**.
 
 A browser window will open automatically. Type what you're looking for and
 press Enter or click Search.
