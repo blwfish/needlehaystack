@@ -33,6 +33,8 @@ The installer checks prerequisites, downloads the LLaVA model (~8 GB), sets up t
 
 ### Windows
 
+> **Untested.** The Windows installer and launcher are written but have never been run on an actual Windows machine. Proceed with low expectations and please report what breaks.
+
 ```
 install-windows.bat
 ```
