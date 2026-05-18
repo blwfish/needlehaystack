@@ -5,9 +5,25 @@ Type "steam locomotive pulling freight through mountain pass" and needlestack
 finds your photos that match — no folders to browse, no filenames to remember.
 
 **Your photos never leave your computer.** needlestack runs entirely on your
-Mac — no account, no internet connection needed after setup, no uploads.
-The AI runs locally and is only used to interpret your search and describe
-what's in each photo. Nothing is sent anywhere.
+Mac — no account, no internet connection needed after setup, no uploads,
+nothing sent anywhere.
+
+Here's what's actually happening: when you index a folder, needlestack reads
+each photo once and uses a locally-running AI to write a short description of
+what's in it — something like *"a red caboose on a siding, pine trees in the
+background, late afternoon light."* That description gets stored in a small
+database on your Mac. The photos themselves are not copied or moved.
+
+When you search, your words are passed to the same local AI, which quietly
+expands them into related terms before searching the stored descriptions —
+so "caboose" also matches "cabin car" and "waycar." The results you see are
+drawn entirely from that local database; needlestack does not look at your
+actual photo files during a search.
+
+The AI is an open-source model called LLaVA, running inside
+[Ollama](https://ollama.com) on your Mac. It has no network access and no
+connection to any external service. If you want to verify that, you can
+disconnect from the internet after installation and everything will still work.
 
 ---
 
