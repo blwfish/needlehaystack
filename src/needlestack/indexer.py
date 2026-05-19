@@ -21,11 +21,22 @@ IMAGE_EXTENSIONS = {
 }
 
 THUMBNAIL_SIZE = (300, 300)
+MAX_PIXELS = 25_000_000  # 25MP cap; downstream uses max 1024px so higher res is wasted
 
 
 def _file_hash(path: Path) -> str:
     stat = path.stat()
     return f"{stat.st_mtime:.0f}-{stat.st_size}"
+
+
+def _cap_image(img: Image.Image) -> Image.Image:
+    """Downsample in-memory if pixel count exceeds MAX_PIXELS. Original file untouched."""
+    w, h = img.size
+    if w * h <= MAX_PIXELS:
+        return img
+    scale = (MAX_PIXELS / (w * h)) ** 0.5
+    img.thumbnail((int(w * scale), int(h * scale)), Image.LANCZOS)
+    return img
 
 
 def _load_image(path: Path) -> Image.Image | None:
@@ -35,11 +46,16 @@ def _load_image(path: Path) -> Image.Image | None:
         }:
             with rawpy.imread(str(path)) as raw:
                 rgb = raw.postprocess(use_camera_wb=True, half_size=True)
-            return Image.fromarray(rgb)
+            return _cap_image(Image.fromarray(rgb))
         else:
             img = Image.open(path)
+            w, h = img.size
+            if w * h > MAX_PIXELS:
+                scale = (MAX_PIXELS / (w * h)) ** 0.5
+                # For JPEG, draft() decodes natively at lower resolution (no full load)
+                img.draft("RGB", (int(w * scale), int(h * scale)))
             img.load()
-            return img.convert("RGB")
+            return _cap_image(img.convert("RGB"))
     except Exception:
         return None
 
