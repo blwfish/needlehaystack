@@ -2,7 +2,7 @@ import io
 from pathlib import Path
 
 import rawpy
-from PIL import Image
+from PIL import Image, ImageOps
 from rich.progress import (
     MofNCompleteColumn,
     Progress,
@@ -39,25 +39,23 @@ def _cap_image(img: Image.Image) -> Image.Image:
     return img
 
 
-def _load_image(path: Path) -> Image.Image | None:
-    try:
-        if path.suffix.lower() in {
-            ".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".raf", ".dng", ".pef"
-        }:
-            with rawpy.imread(str(path)) as raw:
-                rgb = raw.postprocess(use_camera_wb=True, half_size=True)
-            return _cap_image(Image.fromarray(rgb))
-        else:
-            img = Image.open(path)
-            w, h = img.size
-            if w * h > MAX_PIXELS:
-                scale = (MAX_PIXELS / (w * h)) ** 0.5
-                # For JPEG, draft() decodes natively at lower resolution (no full load)
-                img.draft("RGB", (int(w * scale), int(h * scale)))
-            img.load()
-            return _cap_image(img.convert("RGB"))
-    except Exception:
-        return None
+def _load_image(path: Path) -> Image.Image:
+    if path.suffix.lower() in {
+        ".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".raf", ".dng", ".pef"
+    }:
+        with rawpy.imread(str(path)) as raw:
+            rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+        return _cap_image(Image.fromarray(rgb))
+    else:
+        img = Image.open(path)
+        w, h = img.size
+        if w * h > MAX_PIXELS:
+            scale = (MAX_PIXELS / (w * h)) ** 0.5
+            # For JPEG, draft() decodes natively at lower resolution (no full load)
+            img.draft("RGB", (int(w * scale), int(h * scale)))
+        img.load()
+        img = ImageOps.exif_transpose(img)
+        return _cap_image(img.convert("RGB"))
 
 
 def _thumbnail(image: Image.Image) -> bytes:
@@ -124,15 +122,8 @@ def index_directory(
                 _notify(path.name)
                 continue
 
-            image = _load_image(path)
-            if image is None:
-                failed += 1
-                if progress_ctx:
-                    progress_ctx.advance(task)
-                _notify(path.name)
-                continue
-
             try:
+                image = _load_image(path)
                 caption = captioner.caption(image)
                 embedding = embedder.embed_image(image)
                 thumb = _thumbnail(image)

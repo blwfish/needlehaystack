@@ -1,5 +1,9 @@
+import logging
+
 import httpx
 import numpy as np
+
+_log = logging.getLogger(__name__)
 
 from .embedder import Embedder
 from .store import Store
@@ -31,12 +35,18 @@ def _expand_query(query: str, ollama_url: str = "http://localhost:11434", model:
             timeout=60.0,
         )
         resp.raise_for_status()
-        raw = resp.json()["response"].strip()
+        data = resp.json()
+        if data.get("done_reason") == "length":
+            _log.warning("Query expansion truncated at token limit (model=%s)", model)
+        raw = data["response"].strip()
         terms = [t.strip().lower() for t in raw.split(",") if t.strip()]
         seen = {query.lower()}
         unique = [query] + [t for t in terms if t not in seen and not seen.add(t)]
+        if len(unique) > 13:
+            _log.debug("Expansion terms capped at 13 (had %d)", len(unique))
         return unique[:13]
-    except Exception:
+    except Exception as e:
+        _log.warning("Query expansion failed, using bare query: %s", e)
         return [query]
 
 

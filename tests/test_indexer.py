@@ -102,14 +102,16 @@ def test_load_image_oversized_png_capped(tmp_path, monkeypatch):
     assert w * h <= 5000
 
 
-def test_load_image_corrupt_returns_none(tmp_path):
+def test_load_image_corrupt_raises(tmp_path):
     p = tmp_path / "bad.jpg"
     p.write_bytes(b"not an image")
-    assert _load_image(p) is None
+    with pytest.raises(Exception):
+        _load_image(p)
 
 
-def test_load_image_missing_file_returns_none(tmp_path):
-    assert _load_image(tmp_path / "nonexistent.jpg") is None
+def test_load_image_missing_file_raises(tmp_path):
+    with pytest.raises(Exception):
+        _load_image(tmp_path / "nonexistent.jpg")
 
 
 # --- find_images ---

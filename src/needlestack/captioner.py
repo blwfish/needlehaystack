@@ -1,8 +1,11 @@
 import base64
 import io
+import logging
 
 import httpx
 from PIL import Image
+
+_log = logging.getLogger(__name__)
 
 PROMPT = (
     "This is a railroad or railway photograph. Describe it for a searchable photo index. "
@@ -39,7 +42,10 @@ class Captioner:
             json={"model": self.model, "prompt": PROMPT, "images": [b64], "stream": False},
         )
         resp.raise_for_status()
-        return resp.json()["response"].strip()
+        data = resp.json()
+        if data.get("done_reason") == "length":
+            _log.warning("Caption truncated at token limit (model=%s)", self.model)
+        return data["response"].strip()
 
     def check(self) -> tuple[bool, str]:
         """Return (ok, message). Checks Ollama is running and model is available."""
