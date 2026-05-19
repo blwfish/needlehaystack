@@ -54,10 +54,14 @@ def _dec(blob: bytes) -> np.ndarray:
 class Store:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False: WAL mode is safe for concurrent reads from
+        # multiple threads; the background indexing thread hands the Store to
+        # the uvicorn thread after indexing completes.
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._embedding_cache: tuple[list[int], list[str], "np.ndarray"] | None = None
 
     def get_hash(self, path: str) -> str | None:
         row = self.conn.execute(
@@ -87,11 +91,14 @@ class Store:
             (path, hash_, caption, _enc(embedding), thumbnail),
         )
         self.conn.commit()
+        self._embedding_cache = None  # invalidate on write
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
 
     def all_embeddings(self) -> tuple[list[int], list[str], np.ndarray]:
+        if self._embedding_cache is not None:
+            return self._embedding_cache
         rows = self.conn.execute(
             "SELECT id, path, embedding FROM images WHERE embedding IS NOT NULL"
         ).fetchall()
@@ -100,7 +107,8 @@ class Store:
         ids = [r[0] for r in rows]
         paths = [r[1] for r in rows]
         matrix = np.stack([_dec(r[2]) for r in rows])
-        return ids, paths, matrix
+        self._embedding_cache = ids, paths, matrix
+        return self._embedding_cache
 
     def fts_search(self, query: str, limit: int = 100) -> list[tuple[int, str, float]]:
         try:

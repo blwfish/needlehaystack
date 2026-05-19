@@ -114,6 +114,46 @@ def test_load_image_missing_file_raises(tmp_path):
         _load_image(tmp_path / "nonexistent.jpg")
 
 
+def test_load_image_applies_exif_orientation(tmp_path):
+    import io as _io
+    p = tmp_path / "rotated.jpg"
+    # Landscape image (200x100) with EXIF orientation=6 (90° CW).
+    # After exif_transpose the result should be portrait (100x200).
+    img = Image.new("RGB", (200, 100), color=(200, 100, 50))
+    exif = img.getexif()
+    exif[0x0112] = 6  # Orientation: 90° CW
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif.tobytes())
+    p.write_bytes(buf.getvalue())
+    result = _load_image(p)
+    assert result.width < result.height  # was landscape, now portrait
+
+
+# --- index_directory on_progress ---
+
+def test_index_calls_on_progress_callback(tmp_path):
+    from needlestack.store import Store
+    img_path = tmp_path / "img" / "test.jpg"
+    img_path.parent.mkdir()
+    make_test_image(img_path)
+
+    store = Store(tmp_path / "index.db")
+    calls = []
+
+    def on_progress(total, indexed, skipped, failed, current):
+        calls.append((total, indexed, skipped, failed, current))
+
+    index_directory(img_path.parent, store, make_captioner(), make_embedder(),
+                    on_progress=on_progress)
+
+    assert len(calls) >= 1
+    totals  = [c[0] for c in calls]
+    indexed = [c[1] for c in calls]
+    assert all(t == 1 for t in totals)
+    assert max(indexed) == 1
+    store.close()
+
+
 # --- find_images ---
 
 def test_find_images_finds_jpegs(tmp_path):
@@ -164,11 +204,9 @@ def test_file_hash_differs_after_content_change(tmp_path):
     f = tmp_path / "x.jpg"
     f.write_bytes(b"original")
     h1 = _file_hash(f)
-    import time; time.sleep(0.01)
-    f.write_bytes(b"changed")
-    # mtime or size changed
+    # Write more bytes so file size changes — no sleep needed, size is always different
+    f.write_bytes(b"changed_with_extra_bytes")
     h2 = _file_hash(f)
-    # size changed, so hash must differ
     assert h1 != h2
 
 

@@ -1,4 +1,5 @@
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 import rawpy
@@ -15,10 +16,13 @@ from .captioner import Captioner
 from .embedder import Embedder
 from .store import Store
 
-IMAGE_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp",
+RAW_EXTENSIONS = {
     ".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".raf", ".dng", ".pef",
 }
+
+IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp",
+} | RAW_EXTENSIONS
 
 THUMBNAIL_SIZE = (300, 300)
 MAX_PIXELS = 25_000_000  # 25MP cap; downstream uses max 1024px so higher res is wasted
@@ -40,11 +44,14 @@ def _cap_image(img: Image.Image) -> Image.Image:
 
 
 def _load_image(path: Path) -> Image.Image:
-    if path.suffix.lower() in {
-        ".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".raf", ".dng", ".pef"
-    }:
+    if path.suffix.lower() in RAW_EXTENSIONS:
         with rawpy.imread(str(path)) as raw:
-            rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+            # Apply half_size only when the raw sensor exceeds the cap — avoids
+            # unnecessarily halving small RAWs while still protecting memory on
+            # high-megapixel bodies.
+            sizes = raw.sizes
+            half = sizes.raw_width * sizes.raw_height > MAX_PIXELS
+            rgb = raw.postprocess(use_camera_wb=True, half_size=half)
         return _cap_image(Image.fromarray(rgb))
     else:
         img = Image.open(path)
@@ -79,7 +86,7 @@ def index_directory(
     captioner: Captioner,
     embedder: Embedder,
     force: bool = False,
-    on_progress: "Callable | None" = None,
+    on_progress: Callable[[int, int, int, int, str], None] | None = None,
 ) -> tuple[int, int, int]:
     """Index a directory. Returns (indexed, skipped, failed).
 

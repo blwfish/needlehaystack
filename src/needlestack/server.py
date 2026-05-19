@@ -67,9 +67,12 @@ class SearchRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root() -> str:
-    if _setup_mode or _index_state.running or (_store is not None and _store.count() == 0 and not _index_state.done):
-        return (_ui_path / "setup.html").read_text()
-    return (_ui_path / "index.html").read_text()
+    try:
+        if _setup_mode or _index_state.running or (_store is not None and _store.count() == 0 and not _index_state.done):
+            return (_ui_path / "setup.html").read_text()
+        return (_ui_path / "index.html").read_text()
+    except FileNotFoundError as e:
+        raise HTTPException(500, f"UI file missing: {e}")
 
 
 # --- setup wizard endpoints ---
@@ -119,6 +122,8 @@ async def start_indexing(req: dict) -> dict:
     root = Path(folder)
     if not root.exists():
         raise HTTPException(400, f"Folder not found: {folder}")
+    if not root.is_dir():
+        raise HTTPException(400, f"Not a directory: {folder}")
 
     with _index_lock:
         if _index_state.running:
@@ -132,15 +137,20 @@ async def start_indexing(req: dict) -> dict:
         _index_state.failed = 0
         _index_state.current = ""
 
+    # Capture globals now so the thread doesn't race with a future init() call.
+    _captured_db_path = _db_path
+    _captured_ollama_url = _ollama_url
+    _captured_ollama_model = _ollama_model
+
     def _run():
         global _store, _embedder, _setup_mode
         try:
             from .captioner import Captioner
             from .indexer import index_directory
 
-            _db_path.parent.mkdir(parents=True, exist_ok=True)
-            store = Store(_db_path)
-            captioner = Captioner(model=_ollama_model, base_url=_ollama_url)
+            _captured_db_path.parent.mkdir(parents=True, exist_ok=True)
+            store = Store(_captured_db_path)
+            captioner = Captioner(model=_captured_ollama_model, base_url=_captured_ollama_url)
             embedder = Embedder()
 
             def _progress(total, indexed, skipped, failed, current):
@@ -154,6 +164,7 @@ async def start_indexing(req: dict) -> dict:
             index_directory(root, store, captioner, embedder, on_progress=_progress)
             store.set_config("indexed_root", str(root.resolve()))
             captioner.close()
+
 
             with _index_lock:
                 _index_state.running = False
@@ -212,6 +223,8 @@ async def expand(req: SearchRequest) -> dict:
 
 @app.post("/search")
 async def search(req: SearchRequest) -> list[dict]:
+    if _store is None or _embedder is None:
+        raise HTTPException(503, "Index not ready")
     if not req.query.strip():
         return []
     results = search_module.search(
@@ -235,18 +248,32 @@ async def search(req: SearchRequest) -> list[dict]:
 
 @app.get("/thumbnail/{image_id}")
 async def thumbnail(image_id: int) -> Response:
+    if _store is None:
+        raise HTTPException(503, "Index not ready")
     data = _store.get_thumbnail(image_id)
     if not data:
         raise HTTPException(404)
     return Response(content=data, media_type="image/jpeg")
 
 
-@app.post("/open/{image_id}")
-async def open_image(image_id: int) -> dict:
+def _resolve_image_path(image_id: int) -> str:
+    """Look up a stored path and validate it still exists and is an image."""
+    from .indexer import IMAGE_EXTENSIONS
+    if _store is None:
+        raise HTTPException(503, "Index not ready")
     rows = _store.get_by_ids([image_id])
     if not rows:
         raise HTTPException(404)
     path = rows[0]["path"]
+    p = Path(path)
+    if not p.exists() or p.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise HTTPException(404)
+    return path
+
+
+@app.post("/open/{image_id}")
+async def open_image(image_id: int) -> dict:
+    path = _resolve_image_path(image_id)
     if sys.platform == "darwin":
         subprocess.Popen(["open", path])
     elif sys.platform == "win32":
@@ -256,10 +283,7 @@ async def open_image(image_id: int) -> dict:
 
 @app.post("/reveal/{image_id}")
 async def reveal_image(image_id: int) -> dict:
-    rows = _store.get_by_ids([image_id])
-    if not rows:
-        raise HTTPException(404)
-    path = rows[0]["path"]
+    path = _resolve_image_path(image_id)
     if sys.platform == "darwin":
         subprocess.Popen(["open", "-R", path])
     elif sys.platform == "win32":

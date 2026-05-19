@@ -28,7 +28,7 @@ class Captioner:
     def __init__(self, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_URL):
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(timeout=120.0)
+        self._client = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
 
     def caption(self, image: Image.Image) -> str:
         img = image.copy()
@@ -56,8 +56,7 @@ class Captioner:
             return False, f"Ollama not reachable at {self.base_url}"
 
         models = [m["name"] for m in resp.json().get("models", [])]
-        base = self.model.split(":")[0]
-        if not any(m == self.model or m.startswith(base + ":") for m in models):
+        if self.model not in models:
             available = ", ".join(models) or "none"
             return False, (
                 f"Model '{self.model}' not found in Ollama. "

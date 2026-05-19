@@ -154,3 +154,106 @@ def test_get_thumbnail(store):
 
 def test_get_thumbnail_missing(store):
     assert store.get_thumbnail(99999) is None
+
+
+# --- config ---
+
+def test_get_config_missing_key_returns_none(store):
+    assert store.get_config("nonexistent") is None
+
+
+def test_set_and_get_config(store):
+    store.set_config("indexed_root", "/photos")
+    assert store.get_config("indexed_root") == "/photos"
+
+
+def test_set_config_overwrites(store):
+    store.set_config("key", "first")
+    store.set_config("key", "second")
+    assert store.get_config("key") == "second"
+
+
+# --- remove_missing ---
+
+def test_remove_missing_deletes_nonexistent_paths(store, tmp_path):
+    real = tmp_path / "real.jpg"
+    real.write_bytes(b"x")
+    store.upsert(str(real), "h1", "caption", fake_embedding(), b"t")
+    store.upsert("/nonexistent/ghost.jpg", "h2", "caption", fake_embedding(1), b"t")
+    assert store.count() == 2
+
+    removed = store.remove_missing()
+    assert removed == 1
+    assert store.count() == 1
+
+
+def test_remove_missing_keeps_existing_files(store, tmp_path):
+    real = tmp_path / "real.jpg"
+    real.write_bytes(b"x")
+    store.upsert(str(real), "h1", "caption", fake_embedding(), b"t")
+
+    assert store.remove_missing() == 0
+    assert store.count() == 1
+
+
+def test_remove_missing_empty_index(store):
+    assert store.remove_missing() == 0
+
+
+# --- count_unindexed ---
+
+def test_count_unindexed_finds_new_files(store, tmp_path):
+    img_dir = tmp_path / "photos"
+    img_dir.mkdir()
+    (img_dir / "a.jpg").write_bytes(b"x")
+    (img_dir / "b.jpg").write_bytes(b"x")
+
+    assert store.count_unindexed(img_dir) == 2
+    store.upsert(str(img_dir / "a.jpg"), "h1", "caption", fake_embedding(), b"t")
+    assert store.count_unindexed(img_dir) == 1
+
+
+def test_count_unindexed_ignores_non_images(store, tmp_path):
+    img_dir = tmp_path / "photos"
+    img_dir.mkdir()
+    (img_dir / "readme.txt").write_bytes(b"x")
+    assert store.count_unindexed(img_dir) == 0
+
+
+# --- embedding cache ---
+
+def test_embedding_cache_populated_on_first_call(store):
+    store.upsert("/img/a.jpg", "h1", "caption", fake_embedding(), b"t")
+    store._embedding_cache = None  # ensure cold
+
+    ids, paths, matrix = store.all_embeddings()
+
+    assert store._embedding_cache is not None
+    assert len(ids) == 1
+
+
+def test_embedding_cache_returns_same_object_on_second_call(store):
+    store.upsert("/img/a.jpg", "h1", "caption", fake_embedding(), b"t")
+
+    r1 = store.all_embeddings()
+    r2 = store.all_embeddings()
+    assert r1 is r2
+
+
+def test_embedding_cache_invalidated_on_upsert(store):
+    store.upsert("/img/a.jpg", "h1", "caption", fake_embedding(), b"t")
+    store.all_embeddings()  # populate
+    assert store._embedding_cache is not None
+
+    store.upsert("/img/b.jpg", "h2", "caption2", fake_embedding(1), b"t")
+    assert store._embedding_cache is None
+
+
+def test_embedding_cache_repopulates_after_invalidation(store):
+    store.upsert("/img/a.jpg", "h1", "caption", fake_embedding(), b"t")
+    store.all_embeddings()
+    store.upsert("/img/b.jpg", "h2", "caption2", fake_embedding(1), b"t")
+
+    ids, _paths, matrix = store.all_embeddings()
+    assert len(ids) == 2
+    assert matrix.shape == (2, 512)

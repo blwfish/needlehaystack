@@ -76,7 +76,10 @@ def search(
     if len(ids) > 0:
         raw = (matrix @ query_vec).astype(float)
         mn, mx = raw.min(), raw.max()
-        norm = (raw - mn) / (mx - mn) if mx > mn else raw - mn
+        # When all scores are equal (including single-image index), assign a
+        # neutral 0.5 rather than zeroing everything out, which would drop the
+        # only result below MIN_SCORE.
+        norm = (raw - mn) / (mx - mn) if mx > mn else np.full_like(raw, 0.5)
         clip_scores = dict(zip(ids, norm.tolist()))
 
     # FTS5 over captions using expanded query
@@ -87,8 +90,12 @@ def search(
         ranks = np.array([r[2] for r in fts_rows], dtype=float)
         ranks = ranks - ranks.min()
         mx = ranks.max()
+        # When all ranks are equal (single result or all tied), assign 0.5
+        # rather than inverting 0→1.0, which would inflate a poor lone match.
         if mx > 0:
             ranks = ranks / mx
+        else:
+            ranks = np.full_like(ranks, 0.5)
         # invert so 1.0 = best
         for (image_id, _path, _rank), norm in zip(fts_rows, (1.0 - ranks).tolist()):
             fts_scores[image_id] = norm

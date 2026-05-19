@@ -134,3 +134,59 @@ def test_search_results_ordered_by_score(populated_store):
         results = search("caboose", populated_store, mock_embedder())
     scores = [r["score"] for r in results]
     assert scores == sorted(scores, reverse=True)
+
+
+# --- single-image edge cases (H4 / M6 normalization fixes) ---
+
+def test_single_image_index_returns_result(tmp_path):
+    """H4: single-image index must not zero out CLIP scores and drop the only result."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "single.db")
+    vec = fake_embedding(1)
+    s.upsert("/only.jpg", "h1", "a steam locomotive", vec, b"t")
+
+    embedder = MagicMock()
+    embedder.embed_text.return_value = vec  # perfect match → mn == mx
+
+    results = search("locomotive", s, embedder, preexpanded_terms=["locomotive"])
+    assert len(results) == 1
+    s.close()
+
+
+def test_single_fts_result_score_not_inflated(tmp_path):
+    """M6: single FTS result must not be inflated to score 1.0."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "fts.db")
+    vec = fake_embedding(1)
+    s.upsert("/only.jpg", "h1", "a steam locomotive on the mainline", vec, b"t")
+
+    embedder = MagicMock()
+    embedder.embed_text.return_value = vec
+
+    results = search("locomotive", s, embedder, preexpanded_terms=["locomotive", "steam engine"])
+    if results:
+        # Score with neutral FTS (0.5) + CLIP (0.5) = 0.6*0.5 + 0.4*0.5 = 0.5, not 0.8
+        assert results[0]["score"] < 0.75
+    s.close()
+
+
+# --- _expand_query logging ---
+
+def test_expand_query_logs_warning_on_failure(caplog):
+    import logging
+    with patch("needlestack.search.httpx.post", side_effect=Exception("conn refused")):
+        with caplog.at_level(logging.WARNING, logger="needlestack.search"):
+            result = _expand_query("caboose")
+    assert result == ["caboose"]
+    assert any("expansion failed" in r.message.lower() for r in caplog.records)
+
+
+def test_expand_query_logs_warning_on_done_reason_length(caplog):
+    import logging
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"response": "waycar, hack", "done_reason": "length"}
+    with patch("needlestack.search.httpx.post", return_value=mock_resp):
+        with caplog.at_level(logging.WARNING, logger="needlestack.search"):
+            _expand_query("caboose")
+    assert any("truncated" in r.message.lower() or "token limit" in r.message.lower()
+               for r in caplog.records)
