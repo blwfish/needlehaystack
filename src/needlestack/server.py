@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from . import search as search_module
+from . import taxonomy
 from .constants import DEFAULT_MODEL, OLLAMA_URL
 from .embedder import Embedder
 from .store import Store
@@ -126,6 +127,13 @@ async def start_indexing(req: dict) -> dict:
     if not root.is_dir():
         raise HTTPException(400, f"Not a directory: {folder}")
 
+    domain_name = req.get("domain", "railroad").strip()
+    if domain_name not in taxonomy.DOMAINS:
+        raise HTTPException(
+            400,
+            f"Unknown domain {domain_name!r}. Available: {', '.join(taxonomy.DOMAINS)}",
+        )
+
     with _index_lock:
         if _index_state.running:
             return {"status": "already_running"}
@@ -142,16 +150,24 @@ async def start_indexing(req: dict) -> dict:
     _captured_db_path = _db_path
     _captured_ollama_url = _ollama_url
     _captured_ollama_model = _ollama_model
+    _captured_domain_name = domain_name
 
     def _run():
         global _store, _embedder, _setup_mode
+        store = None
+        captioner = None
         try:
             from .captioner import Captioner
             from .indexer import index_directory
 
             _captured_db_path.parent.mkdir(parents=True, exist_ok=True)
             store = Store(_captured_db_path)
-            captioner = Captioner(model=_captured_ollama_model, base_url=_captured_ollama_url)
+            selected_domain = taxonomy.DOMAINS.get(_captured_domain_name, taxonomy.RAILROAD)
+            captioner = Captioner(
+                model=_captured_ollama_model,
+                base_url=_captured_ollama_url,
+                domain=selected_domain,
+            )
 
             # Fail fast and visibly if Ollama/the model isn't ready — otherwise
             # index_directory swallows the per-image errors and the run looks "done"
@@ -177,19 +193,32 @@ async def start_indexing(req: dict) -> dict:
 
             index_directory(root, store, captioner, embedder, on_progress=_progress)
             store.set_config("indexed_root", str(root.resolve()))
+            store.set_config("indexed_domain", _captured_domain_name)
             captioner.close()
+            captioner = None
 
+            # Publish globals before signaling done so any request that observes
+            # done=True also sees a ready _store and _embedder.
+            _store = store
+            _embedder = embedder
+            _setup_mode = False
+            store = None  # handed off to _store; don't close in the except path
 
             with _index_lock:
                 _index_state.running = False
                 _index_state.done = True
 
-            # Switch server to search mode
-            _store = store
-            _embedder = embedder
-            _setup_mode = False
-
         except Exception as e:
+            if captioner is not None:
+                try:
+                    captioner.close()
+                except Exception:
+                    pass
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
             with _index_lock:
                 _index_state.running = False
                 _index_state.error = str(e)
@@ -236,7 +265,9 @@ async def index_progress() -> dict:
 @app.post("/expand")
 async def expand(req: SearchRequest) -> dict:
     from .search import _expand_query
-    terms = _expand_query(req.query, ollama_url=_ollama_url, model=_ollama_model)
+    domain_name = (_store.get_config("indexed_domain") if _store else None) or "railroad"
+    domain = taxonomy.DOMAINS.get(domain_name, taxonomy.RAILROAD)
+    terms = _expand_query(req.query, ollama_url=_ollama_url, model=_ollama_model, domain=domain)
     return {"terms": terms}
 
 
@@ -246,10 +277,13 @@ async def search(req: SearchRequest) -> list[dict]:
         raise HTTPException(503, "Index not ready")
     if not req.query.strip():
         return []
+    domain_name = _store.get_config("indexed_domain") or "railroad"
+    domain = taxonomy.DOMAINS.get(domain_name, taxonomy.RAILROAD)
     results = search_module.search(
         req.query, _store, _embedder, limit=req.limit,
         ollama_url=_ollama_url, ollama_model=_ollama_model,
         preexpanded_terms=req.terms,
+        domain=domain,
     )
     return [
         {
@@ -297,6 +331,8 @@ async def open_image(image_id: int) -> dict:
         subprocess.Popen(["open", path])
     elif sys.platform == "win32":
         subprocess.Popen(["cmd", "/c", "start", "", path], shell=False)
+    else:
+        return {"status": "unsupported", "message": "Open not supported on this platform"}
     return {"status": "ok"}
 
 
@@ -307,4 +343,6 @@ async def reveal_image(image_id: int) -> dict:
         subprocess.Popen(["open", "-R", path])
     elif sys.platform == "win32":
         subprocess.Popen(["explorer", "/select,", path])
+    else:
+        return {"status": "unsupported", "message": "Reveal not supported on this platform"}
     return {"status": "ok"}

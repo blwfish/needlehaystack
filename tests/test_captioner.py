@@ -224,13 +224,22 @@ def test_check_returns_false_when_ollama_unreachable():
     c.close()
 
 
-def test_check_requires_exact_model_match():
-    """M5: a different tag must NOT satisfy a requirement for an exact model."""
+def test_check_different_variant_not_accepted():
+    """M5: a different-size variant (e.g. :3b) must NOT satisfy a :7b requirement."""
     c = Captioner(model="qwen2.5vl:7b")
     with patch.object(c._client, "get", return_value=mock_tags_response(["qwen2.5vl:3b"])):
         ok, msg = c.check()
     assert not ok
     assert "qwen2.5vl:7b" in msg
+    c.close()
+
+
+def test_check_accepts_latest_tag_as_fallback():
+    """M5b: when a user pulls without a tag Ollama stores :latest; accept it."""
+    c = Captioner(model="qwen2.5vl:7b")
+    with patch.object(c._client, "get", return_value=mock_tags_response(["qwen2.5vl:latest"])):
+        ok, _ = c.check()
+    assert ok
     c.close()
 
 

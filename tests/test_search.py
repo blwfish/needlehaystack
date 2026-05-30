@@ -183,20 +183,20 @@ def test_single_image_index_returns_result(tmp_path):
     s.close()
 
 
-def test_single_fts_result_score_not_inflated(tmp_path):
-    """M6: single FTS result must not be inflated to score 1.0."""
+def test_single_doc_returns_and_scores_correctly(tmp_path):
+    """M6: a lone document that matches on both CLIP and FTS must appear and score 1.0."""
     from needlestack.store import Store
     s = Store(tmp_path / "fts.db")
     vec = fake_embedding(1)
     s.upsert("/only.jpg", "h1", "a steam locomotive on the mainline", vec, b"t")
 
     embedder = MagicMock()
-    embedder.embed_text.return_value = vec
+    embedder.embed_text.return_value = vec  # perfect CLIP match
 
     results = search("locomotive", s, embedder, preexpanded_terms=["locomotive", "steam engine"])
     assert results, "single matching doc should still return a result"
-    # Score with neutral FTS (0.5) + CLIP (0.5) = 0.6*0.5 + 0.4*0.5 = 0.5, not 0.8
-    assert results[0]["score"] < 0.75
+    # Single doc: CLIP tie-break → 1.0, FTS tie-break → 1.0. Combined = 0.4*1 + 0.6*1 = 1.0
+    assert results[0]["score"] == 1.0
     s.close()
 
 

@@ -6,6 +6,7 @@ import numpy as np
 _log = logging.getLogger(__name__)
 
 from . import taxonomy
+from .taxonomy import Domain
 from .constants import DEFAULT_MODEL, OLLAMA_URL
 from .embedder import Embedder
 from .store import Store
@@ -14,30 +15,32 @@ from .store import Store
 FTS_WEIGHT = 0.6
 CLIP_WEIGHT = 0.4
 
-EXPAND_PROMPT = (
-    "You are a search synonym expander for a photo archive. "
-    "Given a search phrase, return ONLY direct synonyms and alternate names for the exact same thing. "
-    "Do NOT include related or associated items — only other names for the identical subject. "
-    "Examples: 'caboose' → 'cabin car, waycar, hack, crummy, van'; "
-    "'tank car' → 'tanker, cistern car, pressure car'; "
-    "'steam locomotive' → 'steam engine, steamer'. "
-    f"The archive uses this railroad vocabulary: {taxonomy.equipment_terms_prompt()}. "
-    "Return ONLY a comma-separated list, no explanation, no punctuation other than commas. "
-    "If there are no meaningful synonyms, return only the original term."
-    "\n\nSearch phrase: {query}"
-)
-
 MIN_SCORE = 0.38
 
 
-def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL) -> list[str]:
-    # Deterministic railroad synonyms are always included, so known terms expand even
+def _make_expand_prompt(domain: Domain) -> str:
+    return (
+        "You are a search synonym expander for a photo archive. "
+        "Given a search phrase, return ONLY direct synonyms and alternate names for the exact same thing. "
+        "Do NOT include related or associated items — only other names for the identical subject. "
+        f"The archive covers {domain.name} photography and uses this vocabulary: {domain.subject_types_prompt()}. "
+        "Return ONLY a comma-separated list, no explanation, no punctuation other than commas. "
+        "If there are no meaningful synonyms, return only the original term."
+        "\n\nSearch phrase: {query}"
+    )
+
+
+def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL,
+                  domain: Domain | None = None) -> list[str]:
+    # Deterministic domain synonyms are always included, so known terms expand even
     # when the LLM is unavailable or flubs; the LLM widens coverage beyond the taxonomy.
-    local = taxonomy.synonyms_for(query)
+    _domain = domain if domain is not None else taxonomy.RAILROAD
+    local = _domain.synonyms_for(query)
+    prompt = _make_expand_prompt(_domain)
     try:
         resp = httpx.post(
             f"{ollama_url}/api/generate",
-            json={"model": model, "prompt": EXPAND_PROMPT.format(query=query), "stream": False},
+            json={"model": model, "prompt": prompt.format(query=query), "stream": False},
             timeout=60.0,
         )
         resp.raise_for_status()
@@ -63,8 +66,8 @@ def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT
 
 
 def _fts_query(terms: list[str]) -> str:
-    # FTS5 OR query across all expanded terms
-    escaped = [f'"{t}"' for t in terms]
+    # FTS5 OR query; embed each term as a phrase, doubling any internal " per FTS5 spec.
+    escaped = ['"' + t.replace('"', '""') + '"' for t in terms]
     return " OR ".join(escaped)
 
 
@@ -76,8 +79,11 @@ def search(
     ollama_url: str = OLLAMA_URL,
     ollama_model: str = DEFAULT_MODEL,
     preexpanded_terms: list[str] | None = None,
+    domain: Domain | None = None,
 ) -> list[dict]:
-    terms = preexpanded_terms if preexpanded_terms else _expand_query(query, ollama_url=ollama_url, model=ollama_model)
+    terms = preexpanded_terms if preexpanded_terms is not None else _expand_query(
+        query, ollama_url=ollama_url, model=ollama_model, domain=domain
+    )
     fts_q = _fts_query(terms)
 
     # CLIP similarity over all indexed embeddings
@@ -88,10 +94,9 @@ def search(
     if len(ids) > 0:
         raw = (matrix @ query_vec).astype(float)
         mn, mx = raw.min(), raw.max()
-        # When all scores are equal (including single-image index), assign a
-        # neutral 0.5 rather than zeroing everything out, which would drop the
-        # only result below MIN_SCORE.
-        norm = (raw - mn) / (mx - mn) if mx > mn else np.full_like(raw, 0.5)
+        # When all scores are equal (including single-image index), assign 1.0 so
+        # a CLIP-only result clears MIN_SCORE (CLIP_WEIGHT × 1.0 = 0.40 > 0.38).
+        norm = (raw - mn) / (mx - mn) if mx > mn else np.full_like(raw, 1.0)
         clip_scores = dict(zip(ids, norm.tolist()))
 
     # FTS5 over captions using expanded query
@@ -102,12 +107,12 @@ def search(
         ranks = np.array([r[2] for r in fts_rows], dtype=float)
         ranks = ranks - ranks.min()
         mx = ranks.max()
-        # When all ranks are equal (single result or all tied), assign 0.5
-        # rather than inverting 0→1.0, which would inflate a poor lone match.
+        # When all ranks are equal (single result or all tied), assign 0 so the
+        # inversion (1.0 − 0) = 1.0, letting a lone FTS match clear MIN_SCORE.
         if mx > 0:
             ranks = ranks / mx
         else:
-            ranks = np.full_like(ranks, 0.5)
+            ranks = np.zeros_like(ranks)
         # invert so 1.0 = best
         for (image_id, _path, _rank), norm in zip(fts_rows, (1.0 - ranks).tolist()):
             fts_scores[image_id] = norm

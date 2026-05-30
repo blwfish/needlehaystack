@@ -171,6 +171,7 @@ def run(
 
             # CLIP scores
             out.write("\n  CLIP top-5 matches:\n")
+            embedder = None
             try:
                 from .embedder import Embedder
                 embedder = Embedder()
@@ -193,21 +194,24 @@ def run(
 
             # Final merged results
             out.write(f"\n  Final results (MIN_SCORE={MIN_SCORE}):\n")
-            try:
-                from .search import search
-                results = search(
-                    query, store, embedder,
-                    limit=10, ollama_url=ollama_url, ollama_model=ollama_model,
-                    preexpanded_terms=terms,
-                )
-                if results:
-                    for r in results:
-                        out.write(f"    [{r['score']:.3f}] {Path(r['path']).name}\n")
-                        out.write(f"           {(r['caption'] or '')[:100]}\n")
-                else:
-                    out.write(f"    (no results above threshold {MIN_SCORE})\n")
-            except Exception as e:
-                out.write(f"    FAILED: {e}\n")
+            if embedder is None:
+                out.write("    SKIPPED — embedder unavailable (see CLIP section above)\n")
+            else:
+                try:
+                    from .search import search
+                    results = search(
+                        query, store, embedder,
+                        limit=10, ollama_url=ollama_url, ollama_model=ollama_model,
+                        preexpanded_terms=terms,
+                    )
+                    if results:
+                        for r in results:
+                            out.write(f"    [{r['score']:.3f}] {Path(r['path']).name}\n")
+                            out.write(f"           {(r['caption'] or '')[:100]}\n")
+                    else:
+                        out.write(f"    (no results above threshold {MIN_SCORE})\n")
+                except Exception as e:
+                    out.write(f"    FAILED: {e}\n")
 
         store.close()
 

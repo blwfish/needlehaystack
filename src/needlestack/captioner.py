@@ -136,7 +136,10 @@ class Captioner:
             return False, f"Ollama not reachable at {self.base_url}"
 
         models = [m["name"] for m in resp.json().get("models", [])]
-        if self.model not in models:
+        base = self.model.split(":")[0]
+        # Accept exact match or the untagged pull (stored as :latest by Ollama).
+        model_found = self.model in models or f"{base}:latest" in models
+        if not model_found:
             available = ", ".join(models) or "none"
             return False, (
                 f"Model '{self.model}' not found in Ollama. "
