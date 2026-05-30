@@ -116,28 +116,38 @@ def test_search_returns_list(populated_store):
 
 
 def test_search_result_has_required_fields(populated_store):
+    # mock_embedder(1) matches the caboose doc embedding → deterministic, non-empty.
     with patch("needlestack.search._expand_query", return_value=["caboose"]):
-        results = search("caboose", populated_store, mock_embedder())
-    if results:
-        r = results[0]
-        assert "id" in r
-        assert "path" in r
-        assert "caption" in r
-        assert "score" in r
+        results = search("caboose", populated_store, mock_embedder(1))
+    assert results, "expected at least one result for a matching caption"
+    r = results[0]
+    assert "id" in r
+    assert "path" in r
+    assert "caption" in r
+    assert "score" in r
 
 
 def test_search_fts_match_scores_high(populated_store):
     # "caboose" is in only one caption — that image should appear and score well
     with patch("needlestack.search._expand_query", return_value=["caboose"]):
-        results = search("caboose", populated_store, mock_embedder())
+        results = search("caboose", populated_store, mock_embedder(1))
+    assert results
     paths = [r["path"] for r in results]
     assert "/caboose.jpg" in paths
 
 
-def test_search_min_score_filters_results(populated_store):
+def test_min_score_threshold_is_load_bearing(populated_store):
+    """Not 'all returned scores >= MIN_SCORE' (which is tautological — the function
+    filters on exactly that). Instead prove the threshold actually excludes: a high
+    threshold returns strictly fewer results than a permissive one."""
+    emb = mock_embedder(1)
     with patch("needlestack.search._expand_query", return_value=["caboose"]):
-        results = search("caboose", populated_store, mock_embedder())
-    assert all(r["score"] >= MIN_SCORE for r in results)
+        with patch("needlestack.search.MIN_SCORE", 0.0):
+            permissive = search("caboose", populated_store, emb)
+        with patch("needlestack.search.MIN_SCORE", 0.99):
+            strict = search("caboose", populated_store, emb)
+    assert len(permissive) > len(strict)   # threshold is doing real work
+    assert len(strict) < 3                  # not everything clears a 0.99 bar
 
 
 def test_search_empty_index(tmp_path):
@@ -184,9 +194,9 @@ def test_single_fts_result_score_not_inflated(tmp_path):
     embedder.embed_text.return_value = vec
 
     results = search("locomotive", s, embedder, preexpanded_terms=["locomotive", "steam engine"])
-    if results:
-        # Score with neutral FTS (0.5) + CLIP (0.5) = 0.6*0.5 + 0.4*0.5 = 0.5, not 0.8
-        assert results[0]["score"] < 0.75
+    assert results, "single matching doc should still return a result"
+    # Score with neutral FTS (0.5) + CLIP (0.5) = 0.6*0.5 + 0.4*0.5 = 0.5, not 0.8
+    assert results[0]["score"] < 0.75
     s.close()
 
 

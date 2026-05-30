@@ -113,3 +113,42 @@ def test_open_returns_404_for_missing_id(client_with_store):
     client, _ = client_with_store
     resp = client.post("/open/99999")
     assert resp.status_code == 404
+
+
+# --- sync-status (new/stale caption reporting) ---
+
+def test_sync_status_none_store(client_no_store):
+    resp = client_no_store.get("/api/sync-status")
+    assert resp.status_code == 200
+    assert resp.json()["new"] == 0
+
+
+def test_sync_status_reports_stale_captions(client_with_store, tmp_path):
+    client, store = client_with_store
+    root = tmp_path / "photos"
+    root.mkdir()
+    store.set_config("indexed_root", str(root))
+    # A row whose caption_version predates the current model → counts as stale.
+    store.upsert(
+        str(root / "a.jpg"), "h", "an old caption", np.zeros(512, dtype=np.float32),
+        b"t", caption_version="ancient:v0",
+    )
+    resp = client.get("/api/sync-status")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["stale"] == 1
+    assert d["new"] == 0   # no actual file on disk → nothing "new"
+
+
+def test_sync_status_no_stale_when_current(client_with_store, tmp_path):
+    client, store = client_with_store
+    root = tmp_path / "photos"
+    root.mkdir()
+    store.set_config("indexed_root", str(root))
+    from needlestack.constants import caption_version
+    store.upsert(
+        str(root / "a.jpg"), "h", "a fresh caption", np.zeros(512, dtype=np.float32),
+        b"t", caption_version=caption_version(srv._ollama_model),
+    )
+    resp = client.get("/api/sync-status")
+    assert resp.json()["stale"] == 0

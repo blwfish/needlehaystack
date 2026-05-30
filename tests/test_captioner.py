@@ -142,6 +142,49 @@ def test_caption_thorough_merges_ocr_pass():
     c.close()
 
 
+def test_caption_marks_without_visible_text_still_in_caption():
+    """Equipment carries reporting marks but the model returned no visible_text list.
+    The marks must still surface in the caption (the `elif mark_tokens` branch)."""
+    c = Captioner()
+    payload = {
+        "is_railroad": True, "description": "a boxcar",
+        "equipment": [{"type": "boxcar", "road_name": "", "reporting_marks": "ATSF",
+                       "road_number": "1234", "details": ""}],
+        "visible_text": [],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert "Reporting marks:" in result.caption
+    assert "ATSF" in result.caption and "1234" in result.caption
+    c.close()
+
+
+def test_caption_thorough_ocr_failure_is_safe():
+    """If the dedicated OCR pass errors, the structured result is preserved, no crash."""
+    import httpx
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a tank car",
+               "equipment": [], "visible_text": ["UTLX"]}
+    responses = [mock_json_generate(payload), httpx.ConnectError("ollama down")]
+    with patch.object(c._client, "post", side_effect=responses):
+        result = c.caption(make_image(), thorough=True)
+    assert "UTLX" in result.reporting_marks   # structured pass survived
+    c.close()
+
+
+def test_caption_total_failure_returns_empty_not_crash():
+    """Structured call returns junk AND the plain-text fallback also errors → an empty
+    caption is returned (never lose the row, never raise)."""
+    import httpx
+    c = Captioner()
+    responses = [mock_generate_response("not json"), httpx.ConnectError("ollama down")]
+    with patch.object(c._client, "post", side_effect=responses):
+        result = c.caption(make_image())
+    assert isinstance(result, CaptionResult)
+    assert result.caption == ""
+    c.close()
+
+
 def test_caption_logs_warning_on_truncation(caplog):
     c = Captioner()
     payload = {"is_railroad": True, "description": "truncated mid"}

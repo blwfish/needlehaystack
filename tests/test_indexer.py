@@ -307,6 +307,34 @@ def test_index_force_reindexes(tmp_path):
     store.close()
 
 
+def test_index_recaptions_when_version_stale(tmp_path):
+    """The headline upgrade behavior: an unchanged file whose caption came from an
+    OLDER model/prompt must be re-captioned, NOT skipped."""
+    from needlestack.store import Store
+    img_path = tmp_path / "img" / "test.jpg"
+    img_path.parent.mkdir()
+    make_test_image(img_path)
+
+    store = Store(tmp_path / "index.db")
+    embedder = make_embedder()
+
+    # First index with an "old" model.
+    old_cap = make_captioner()
+    old_cap.model = "old-model"
+    indexed1, _, _ = index_directory(img_path.parent, store, old_cap, embedder)
+    assert indexed1 == 1
+
+    # Re-index, same file (same hash), but a NEW model → version differs → re-caption.
+    new_cap = make_captioner()
+    new_cap.model = "new-model"
+    indexed2, skipped2, _ = index_directory(img_path.parent, store, new_cap, embedder)
+    assert indexed2 == 1   # re-captioned despite unchanged file
+    assert skipped2 == 0
+    new_cap.caption.assert_called()  # the new captioner actually ran
+
+    store.close()
+
+
 def test_index_handles_unreadable_file(tmp_path):
     from needlestack.store import Store
     img_dir = tmp_path / "img"
