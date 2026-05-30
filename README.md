@@ -3,10 +3,13 @@
 Find photos by describing what's in them — fully local, no cloud, no account.
 
 > *"Show me the caboose on the siding at dusk"*  
-> *"Red brick station with a covered platform"*  
-> *"Steam locomotive with large driving wheels"*
+> *"USS Enterprise alongside the pier, Cold War era"*  
+> *"Tiger I with winter whitewash, Eastern Front"*  
+> *"F-86 Sabre on the flight line, Korean War"*
 
 needlestack indexes a folder of images using a local vision-language model to write a rich description of each photo, then searches those descriptions with a combination of full-text search and CLIP embeddings. Everything runs on your machine.
+
+Works with **railroad**, **naval**, **armor (AFV)**, and **aviation** photo collections — each domain brings its own vocabulary, identifier fields, and synonym expansion.
 
 **Your photos never leave your computer.** All AI processing happens locally via [Ollama](https://ollama.com) — no account, no upload, no cloud. The AI interprets your search query and generates captions; that's it. Nothing goes anywhere.
 
@@ -14,7 +17,7 @@ needlestack indexes a folder of images using a local vision-language model to wr
 
 ## How it works
 
-1. **Index** — for each image, a VLM ([qwen2.5vl:7b](https://ollama.com/library/qwen2.5vl) via Ollama) reads the scene *and the text in it* — reporting marks, road numbers, heralds — into a structured, searchable caption; [OpenCLIP](https://github.com/mlfoundations/open_clip) generates a vector embedding. Both are stored in SQLite.
+1. **Index** — for each image, a VLM ([qwen2.5vl:7b](https://ollama.com/library/qwen2.5vl) via Ollama) reads the scene and any text in it — identifiers, markings, road numbers, hull numbers — into a structured, searchable caption matched to your collection's domain; [OpenCLIP](https://github.com/mlfoundations/open_clip) generates a vector embedding. Both are stored in SQLite.
 2. **Search** — your query is expanded to synonyms via the same LLM, then matched against captions with SQLite FTS5 (BM25) and against embeddings with cosine similarity. Results are merged and ranked.
 3. **Browse** — a small local web UI shows thumbnails; click to open in your default viewer, hover for the "show in Finder" button.
 
@@ -69,11 +72,12 @@ needlestack doctor              Diagnostic report — use --out report.txt to sa
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `~/.needlestack/index.db` | SQLite database path |
+| `--domain` | `railroad` | Collection type: `railroad` / `naval` / `armor` / `aviation` |
 | `--preset` | *(auto-chosen by installer)* | Model tier: `fast` / `balanced` / `quality` |
 | `--model` | — | Exact Ollama model name (overrides `--preset`) |
 | `--ollama` | `http://localhost:11434` | Ollama base URL |
 | `--force` | off | Re-caption already-indexed files |
-| `--thorough` | off | Add a dedicated OCR pass for reporting marks (~2× slower) |
+| `--thorough` | off | Add a dedicated OCR pass for identifiers (~2× slower) |
 
 **Model presets**
 
@@ -120,16 +124,17 @@ Indexing is incremental — re-running `index` on the same folder only processes
 
 ```
 src/needlestack/
-  captioner.py   Ollama HTTP client — generates captions via LLaVA
+  captioner.py   Ollama HTTP client — structured VLM captions per domain
   embedder.py    OpenCLIP ViT-B-32 — image and text embeddings (MPS/CUDA/CPU)
   indexer.py     File discovery, hashing, thumbnail generation, orchestration
   search.py      Query expansion, FTS5 search, cosine similarity, score fusion
   store.py       SQLite — schema, FTS5 triggers, embedding blobs, config
+  taxonomy.py    Domain vocabulary — subject types, synonyms, prompt fragments
   server.py      FastAPI — search, setup wizard, open/reveal, sync-status
   cli.py         Click — index, serve, doctor commands
   ui/
     index.html   Search UI
-    setup.html   First-run wizard + re-index progress
+    setup.html   First-run wizard (includes domain selector) + progress
 ```
 
 Search scoring: `score = 0.6 × FTS5_rank + 0.4 × CLIP_cosine`, results below 0.38 are dropped.
