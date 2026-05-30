@@ -1,6 +1,6 @@
 import pytest
 from needlestack import taxonomy
-from needlestack.taxonomy import RAILROAD, NAVAL, get_domain, DOMAINS
+from needlestack.taxonomy import RAILROAD, NAVAL, ARMOR, AVIATION, get_domain, DOMAINS
 
 
 # --- backward-compatible module-level helpers (RAILROAD wrappers) ---
@@ -66,6 +66,30 @@ def test_naval_domain_fields():
     assert "destroyer" in NAVAL.valid_subject_types
 
 
+def test_armor_domain_fields():
+    assert ARMOR.name == "armor"
+    assert ARMOR.subject_field == "is_armor"
+    assert ARMOR.items_field == "vehicles"
+    assert ARMOR.identifier_label == "tactical number"
+    assert "tank" in ARMOR.valid_subject_types
+    # Check high-priority identifier field exists
+    weights = {f: w for f, w in ARMOR.item_fields}
+    assert weights["tactical_number"] == "high"
+    assert weights["vehicle_name"] == "mid"
+
+
+def test_aviation_domain_fields():
+    assert AVIATION.name == "aviation"
+    assert AVIATION.subject_field == "is_aviation"
+    assert AVIATION.items_field == "aircraft"
+    assert AVIATION.identifier_label == "tail code"
+    assert "fighter" in AVIATION.valid_subject_types
+    weights = {f: w for f, w in AVIATION.item_fields}
+    assert weights["tail_code"] == "high"
+    assert weights["nickname"] == "high"
+    assert weights["aircraft_model"] == "mid"
+
+
 def test_domain_item_fields_have_type_and_details():
     """Every domain must start with type (mid) and end with details (phrase)."""
     for domain in DOMAINS.values():
@@ -121,15 +145,43 @@ def test_get_domain_naval():
 
 def test_get_domain_unknown_raises():
     with pytest.raises(KeyError, match="Unknown domain"):
-        get_domain("aviation")
+        get_domain("spaceflight")
 
 
 def test_domains_registry_contains_known_domains():
     assert "railroad" in DOMAINS
     assert "naval" in DOMAINS
+    assert "armor" in DOMAINS
+    assert "aviation" in DOMAINS
 
 
-def test_domains_are_independent():
-    """The two domains must not share field names that would cause cross-domain confusion."""
-    assert RAILROAD.subject_field != NAVAL.subject_field
-    assert RAILROAD.items_field != NAVAL.items_field
+def test_all_domain_subject_fields_are_unique():
+    """Every domain uses a distinct subject_field name — cross-domain JSON ambiguity check."""
+    subject_fields = [d.subject_field for d in DOMAINS.values()]
+    assert len(subject_fields) == len(set(subject_fields)), \
+        f"Duplicate subject_field: {subject_fields}"
+
+
+def test_all_domain_items_fields_are_unique():
+    """Every domain uses a distinct items_field name — no two domains share a JSON key."""
+    items_fields = [d.items_field for d in DOMAINS.values()]
+    assert len(items_fields) == len(set(items_fields)), \
+        f"Duplicate items_field: {items_fields}"
+
+
+def test_armor_synonyms_for_known_term():
+    syn = ARMOR.synonyms_for("tank")
+    assert "MBT" in syn
+    assert "main battle tank" in syn
+    assert "tank" not in syn
+
+
+def test_aviation_synonyms_for_known_term():
+    syn = AVIATION.synonyms_for("fighter")
+    assert "interceptor" in syn
+    assert "fighter" not in syn
+
+
+def test_aviation_synonyms_for_abbreviation():
+    syn = AVIATION.synonyms_for("UAV")
+    assert "drone" in syn

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from needlestack.captioner import Captioner, CaptionResult
-from needlestack.taxonomy import NAVAL, RAILROAD
+from needlestack.taxonomy import NAVAL, RAILROAD, ARMOR, AVIATION
 
 
 def make_image():
@@ -380,4 +380,111 @@ def test_naval_fallback_prompt_mentions_naval(caplog):
     fallback_call = mock_post.call_args_list[1]
     sent_prompt = fallback_call[1]["json"]["prompt"]
     assert "naval" in sent_prompt.lower()
+    c.close()
+
+
+# --- armor domain ---
+
+def test_armor_caption_uses_vehicles_field():
+    """Tactical number goes to reporting_marks (high); vehicle_name+nation to equipment (mid)."""
+    c = Captioner(domain=ARMOR)
+    payload = {
+        "is_armor": True,
+        "description": "A Tiger I tank in a field.",
+        "setting": "field exercise",
+        "era": "WWII",
+        "view": "three-quarter front",
+        "vehicles": [
+            {
+                "type": "tank",
+                "vehicle_name": "Tiger I",
+                "nation": "Germany",
+                "tactical_number": "121",
+                "details": "Zimmerit coating, dunkelgelb base",
+            }
+        ],
+        "visible_text": ["121"],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.is_railroad is True              # is_armor → is_subject
+    assert "121" in result.reporting_marks         # tactical_number high-priority
+    assert "Tiger I" in result.equipment           # vehicle_name mid-priority
+    assert "Germany" in result.equipment           # nation mid-priority
+    assert "tank" in result.equipment              # type mid-priority
+    assert "View: three-quarter front" in result.caption
+    c.close()
+
+
+def test_armor_unknown_vehicle_type_kept(caplog):
+    c = Captioner(domain=ARMOR)
+    payload = {
+        "is_armor": True,
+        "description": "an unusual vehicle",
+        "vehicles": [{"type": "tankette", "tactical_number": "", "details": ""}],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack.captioner"):
+            result = c.caption(make_image())
+    assert "tankette" in result.equipment   # kept
+    assert any("tankette" in r.message for r in caplog.records)
+    c.close()
+
+
+# --- aviation domain ---
+
+def test_aviation_caption_uses_aircraft_field():
+    """tail_code and nickname go to reporting_marks (high); aircraft_model+operator to equipment (mid)."""
+    c = Captioner(domain=AVIATION)
+    payload = {
+        "is_aviation": True,
+        "description": "A B-17 Flying Fortress on a British airfield.",
+        "setting": "airfield",
+        "era": "WWII",
+        "view": "broadside/profile",
+        "aircraft": [
+            {
+                "type": "bomber",
+                "aircraft_model": "B-17 Flying Fortress",
+                "operator": "USAAF",
+                "tail_code": "44-83684",
+                "nickname": "Memphis Belle",
+                "details": "natural metal finish",
+            }
+        ],
+        "visible_text": ["Memphis Belle", "44-83684"],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.is_railroad is True
+    assert "44-83684" in result.reporting_marks    # tail_code high-priority
+    assert "Memphis Belle" in result.reporting_marks  # nickname high-priority
+    assert "B-17 Flying Fortress" in result.equipment  # aircraft_model mid-priority
+    assert "USAAF" in result.equipment             # operator mid-priority
+    assert "View: broadside/profile" in result.caption
+    c.close()
+
+
+def test_aviation_no_nickname_still_works():
+    """Missing optional nickname field should not crash or add empty token."""
+    c = Captioner(domain=AVIATION)
+    payload = {
+        "is_aviation": True,
+        "description": "A Spitfire at an airshow.",
+        "aircraft": [
+            {
+                "type": "fighter",
+                "aircraft_model": "Spitfire Mk IX",
+                "operator": "RAF",
+                "tail_code": "EE-549",
+                "nickname": "",   # empty
+                "details": "",
+            }
+        ],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert "EE-549" in result.reporting_marks
+    assert "Spitfire Mk IX" in result.equipment
+    assert "" not in result.reporting_marks.split()   # no empty token
     c.close()

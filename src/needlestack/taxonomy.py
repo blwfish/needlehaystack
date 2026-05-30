@@ -230,12 +230,187 @@ NAVAL = Domain(
 
 
 # ---------------------------------------------------------------------------
+# Armor domain (AFVs / armored fighting vehicles)
+# ---------------------------------------------------------------------------
+
+_ARMOR_SUBJECT_TYPES: dict[str, list[str]] = {
+    "tank": [
+        "MBT", "main battle tank", "medium tank", "heavy tank", "light tank",
+        "infantry tank", "cavalry tank", "cruiser tank",
+    ],
+    "armored personnel carrier": ["APC", "troop carrier", "armored troop carrier"],
+    "infantry fighting vehicle": ["IFV", "MICV", "mechanized infantry vehicle", "BMP", "Bradley"],
+    "self-propelled gun": [
+        "SPG", "SP gun", "self-propelled artillery", "assault gun",
+        "tank destroyer", "SP howitzer", "SP mortar", "gun motor carriage",
+    ],
+    "half-track": ["halftrack", "semi-tracked vehicle", "armored halftrack"],
+    "armored car": [
+        "wheeled armored vehicle", "scout car", "armored reconnaissance vehicle",
+        "armored fighting vehicle", "armored lorry",
+    ],
+    "armored recovery vehicle": ["ARV", "recovery vehicle", "BREM"],
+    "combat engineer vehicle": ["CEV", "bridgelayer", "AVLB", "AVRE", "dozer tank"],
+    "antiaircraft vehicle": [
+        "SPAAG", "SPAA", "self-propelled AA", "AA vehicle", "Flakpanzer",
+    ],
+    "multiple launch rocket system": [
+        "MLRS", "rocket artillery", "rocket launcher", "MRL", "Katyusha",
+    ],
+    "armored command vehicle": ["ACV", "command tank", "command vehicle"],
+    "artillery tractor": ["prime mover", "gun tractor"],
+}
+
+_ARMOR_SETTINGS: list[str] = [
+    "proving ground", "firing range", "field exercise", "maneuvers",
+    "desert", "muddy terrain", "winter/snow", "urban",
+    "museum display", "depot", "workshop", "parade", "static display",
+]
+
+ARMOR = Domain(
+    name="armor",
+    subject_types=_ARMOR_SUBJECT_TYPES,
+    identifier_label="tactical number",
+    settings=_ARMOR_SETTINGS,
+    subject_field="is_armor",
+    items_field="vehicles",
+    item_fields=[
+        ("type", "mid"),
+        ("vehicle_name", "mid"),   # e.g. M4 Sherman, Tiger I, T-34/85
+        ("nation", "mid"),          # e.g. Germany, United States, Soviet Union
+        ("tactical_number", "high"), # painted hull/turret marking
+        ("details", "phrase"),
+    ],
+    prompt_fragments={
+        "preamble": "This is an armored fighting vehicle photograph (or might be).",
+        "subject_qualifier": (
+            "true only if the photo actually shows a tank, armored vehicle, "
+            "or other AFV subject matter"
+        ),
+        "item_singular": "vehicle",
+        "id_instruction": (
+            "Fill vehicle_name (specific model, e.g. M4 Sherman, Tiger I, T-34/85) "
+            "and nation (e.g. Germany, United States, Soviet Union, United Kingdom). "
+            "Fill tactical_number (hull or turret marking, e.g. 121, B17) ONLY from "
+            "markings you can actually read in the image; leave blank if not legible."
+        ),
+        "era_examples": "WWI, WWII, Cold War, Vietnam era, modern",
+        "view_instruction": (
+            "broadside, three-quarter front, three-quarter rear, head-on, rear, "
+            "overhead, detail closeup, interior/fighting compartment"
+        ),
+        "type_note": "",
+        "fallback_preamble": (
+            "This is an armored fighting vehicle photograph. Describe it for a "
+            "searchable photo index using exact AFV terminology — vehicle type, "
+            "specific model name, nation, tactical markings if legible, and setting. "
+            "If this is not an AFV photo, describe what it actually shows with equal "
+            "specificity. Write in plain sentences, no preamble."
+        ),
+    },
+)
+
+
+# ---------------------------------------------------------------------------
+# Aviation domain (military and historic aircraft)
+# ---------------------------------------------------------------------------
+
+_AVIATION_SUBJECT_TYPES: dict[str, list[str]] = {
+    "fighter": [
+        "pursuit aircraft", "interceptor", "air superiority fighter",
+        "multirole fighter", "day fighter", "night fighter",
+    ],
+    "bomber": [
+        "strategic bomber", "medium bomber", "light bomber", "dive bomber",
+        "torpedo bomber", "flying fortress",
+    ],
+    "attack aircraft": [
+        "close air support", "ground attack", "strike aircraft", "CAS aircraft",
+    ],
+    "transport": [
+        "cargo aircraft", "airlift", "troop transport", "utility transport",
+    ],
+    "helicopter": [
+        "rotorcraft", "chopper", "gunship", "attack helicopter",
+        "utility helicopter", "observation helicopter",
+    ],
+    "trainer": [
+        "training aircraft", "advanced trainer", "jet trainer", "basic trainer",
+    ],
+    "reconnaissance aircraft": [
+        "recon", "photo-recon", "surveillance aircraft", "observation aircraft",
+        "spyplane",
+    ],
+    "maritime patrol": [
+        "ASW aircraft", "patrol aircraft", "flying boat", "anti-submarine",
+        "maritime reconnaissance",
+    ],
+    "tanker": ["aerial refueling", "air-to-air refueling", "tanker aircraft"],
+    "drone": ["UAV", "unmanned aerial vehicle", "remotely piloted aircraft", "UAS"],
+    "glider": ["troop glider", "sailplane", "towed glider"],
+    "seaplane": ["floatplane", "amphibian", "flying boat"],
+}
+
+_AVIATION_SETTINGS: list[str] = [
+    "flight line", "ramp", "apron", "hangar", "in flight", "landing",
+    "takeoff", "carrier deck", "museum", "airshow", "dispersal",
+    "revetment", "airfield", "airstrip",
+]
+
+AVIATION = Domain(
+    name="aviation",
+    subject_types=_AVIATION_SUBJECT_TYPES,
+    identifier_label="tail code",
+    settings=_AVIATION_SETTINGS,
+    subject_field="is_aviation",
+    items_field="aircraft",
+    item_fields=[
+        ("type", "mid"),
+        ("aircraft_model", "mid"),  # e.g. F-86 Sabre, B-17 Flying Fortress
+        ("operator", "mid"),         # e.g. USAF, RAF, Luftwaffe
+        ("tail_code", "high"),       # serial number or tail code
+        ("nickname", "high"),        # e.g. Memphis Belle, Enola Gay
+        ("details", "phrase"),
+    ],
+    prompt_fragments={
+        "preamble": "This is an aviation photograph (or might be).",
+        "subject_qualifier": (
+            "true only if the photo actually shows aircraft subject matter"
+        ),
+        "item_singular": "aircraft",
+        "id_instruction": (
+            "Fill aircraft_model (specific type, e.g. F-86 Sabre, B-17 Flying Fortress, "
+            "Spitfire Mk IX) and operator (e.g. USAF, RAF, US Navy, Luftwaffe). "
+            "Fill tail_code (serial or buzz number, e.g. 44-83684, EE-549) and nickname "
+            "(e.g. Memphis Belle, Enola Gay) ONLY from markings or text you can actually "
+            "read in the image; leave blank if not legible."
+        ),
+        "era_examples": "WWI, interwar, WWII, Korean War, Cold War, Vietnam era, modern",
+        "view_instruction": (
+            "broadside/profile, three-quarter front, three-quarter rear, head-on, "
+            "in flight, landing/takeoff, detail closeup, cockpit"
+        ),
+        "type_note": "",
+        "fallback_preamble": (
+            "This is an aviation photograph. Describe it for a searchable photo index "
+            "using exact aviation terminology — aircraft type, specific model name, "
+            "operator/service, tail code or serial if legible, and setting. "
+            "If this is not an aviation photo, describe what it actually shows with "
+            "equal specificity. Write in plain sentences, no preamble."
+        ),
+    },
+)
+
+
+# ---------------------------------------------------------------------------
 # Domain registry
 # ---------------------------------------------------------------------------
 
 DOMAINS: dict[str, Domain] = {
     "railroad": RAILROAD,
     "naval": NAVAL,
+    "armor": ARMOR,
+    "aviation": AVIATION,
 }
 
 
