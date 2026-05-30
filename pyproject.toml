@@ -1,6 +1,6 @@
 [project]
 name = "needlestack"
-version = "0.1.2"
+version = "0.2.0"
 description = "Find photos by describing what's in them"
 requires-python = ">=3.12"
 dependencies = [
