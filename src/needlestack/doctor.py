@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
+from .constants import DEFAULT_MODEL
 from .search import MIN_SCORE, _expand_query, _fts_query
 
 
@@ -23,7 +24,7 @@ def run(
     db_path: Path,
     query: str | None = None,
     ollama_url: str = "http://localhost:11434",
-    ollama_model: str = "llava:13b",
+    ollama_model: str = DEFAULT_MODEL,
 ) -> str:
     out = io.StringIO()
 
@@ -122,13 +123,10 @@ def run(
                 out.write(f"\n  {Path(path).name}\n")
                 out.write(f"  {(caption or '').strip()[:300]}\n")
 
-            # Railroad vocabulary check
+            # Railroad vocabulary check (terms sourced from the single taxonomy)
             _section(out, "Railroad vocabulary in captions")
-            terms = [
-                "locomotive", "steam", "diesel", "boxcar", "box car",
-                "tank car", "tanker", "caboose", "flatcar", "hopper",
-                "gondola", "freight", "passenger", "depot", "yard",
-            ]
+            from . import taxonomy
+            terms = taxonomy.frequency_terms()
             for term in terms:
                 n = store.conn.execute(
                     "SELECT COUNT(*) FROM images WHERE caption LIKE ?", (f"%{term}%",)

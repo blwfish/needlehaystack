@@ -241,8 +241,17 @@ def test_thumbnail_respects_max_size():
 # --- index_directory skip logic ---
 
 def make_captioner():
+    from needlestack.captioner import CaptionResult
     c = MagicMock()
-    c.caption.return_value = "a steam locomotive on the mainline"
+    c.model = "test-model"
+    c.caption.return_value = CaptionResult(
+        caption="a steam locomotive on the mainline",
+        description="a steam locomotive on the mainline",
+        is_railroad=True,
+        reporting_marks="ATSF 3751",
+        equipment="steam locomotive Santa Fe",
+        structured_json="{}",
+    )
     return c
 
 

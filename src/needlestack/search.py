@@ -5,6 +5,8 @@ import numpy as np
 
 _log = logging.getLogger(__name__)
 
+from . import taxonomy
+from .constants import DEFAULT_MODEL
 from .embedder import Embedder
 from .store import Store
 
@@ -19,6 +21,7 @@ EXPAND_PROMPT = (
     "Examples: 'caboose' → 'cabin car, waycar, hack, crummy, van'; "
     "'tank car' → 'tanker, cistern car, pressure car'; "
     "'steam locomotive' → 'steam engine, steamer'. "
+    f"The archive uses this railroad vocabulary: {taxonomy.equipment_terms_prompt()}. "
     "Return ONLY a comma-separated list, no explanation, no punctuation other than commas. "
     "If there are no meaningful synonyms, return only the original term."
     "\n\nSearch phrase: {query}"
@@ -27,7 +30,10 @@ EXPAND_PROMPT = (
 MIN_SCORE = 0.38
 
 
-def _expand_query(query: str, ollama_url: str = "http://localhost:11434", model: str = "llava:13b") -> list[str]:
+def _expand_query(query: str, ollama_url: str = "http://localhost:11434", model: str = DEFAULT_MODEL) -> list[str]:
+    # Deterministic railroad synonyms are always included, so known terms expand even
+    # when the LLM is unavailable or flubs; the LLM widens coverage beyond the taxonomy.
+    local = taxonomy.synonyms_for(query)
     try:
         resp = httpx.post(
             f"{ollama_url}/api/generate",
@@ -39,15 +45,21 @@ def _expand_query(query: str, ollama_url: str = "http://localhost:11434", model:
         if data.get("done_reason") == "length":
             _log.warning("Query expansion truncated at token limit (model=%s)", model)
         raw = data["response"].strip()
-        terms = [t.strip().lower() for t in raw.split(",") if t.strip()]
-        seen = {query.lower()}
-        unique = [query] + [t for t in terms if t not in seen and not seen.add(t)]
-        if len(unique) > 13:
-            _log.debug("Expansion terms capped at 13 (had %d)", len(unique))
-        return unique[:13]
+        terms = [t.strip() for t in raw.split(",") if t.strip()]
     except Exception as e:
-        _log.warning("Query expansion failed, using bare query: %s", e)
-        return [query]
+        _log.warning("Query expansion failed, using bare query + taxonomy: %s", e)
+        terms = []
+
+    # Union: original first, then local synonyms, then LLM terms; dedup case-insensitively.
+    seen = {query.lower()}
+    unique = [query]
+    for t in [*local, *terms]:
+        if t.lower() not in seen:
+            seen.add(t.lower())
+            unique.append(t.lower())
+    if len(unique) > 13:
+        _log.debug("Expansion terms capped at 13 (had %d)", len(unique))
+    return unique[:13]
 
 
 def _fts_query(terms: list[str]) -> str:
@@ -62,7 +74,7 @@ def search(
     embedder: Embedder,
     limit: int = 40,
     ollama_url: str = "http://localhost:11434",
-    ollama_model: str = "llava:13b",
+    ollama_model: str = DEFAULT_MODEL,
     preexpanded_terms: list[str] | None = None,
 ) -> list[dict]:
     terms = preexpanded_terms if preexpanded_terms else _expand_query(query, ollama_url=ollama_url, model=ollama_model)

@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from . import search as search_module
+from .constants import DEFAULT_MODEL, OLLAMA_URL
 from .embedder import Embedder
 from .store import Store
 
@@ -19,8 +20,8 @@ _store: Store | None = None
 _embedder: Embedder | None = None
 _ui_path: Path | None = None
 _db_path: Path | None = None
-_ollama_url: str = "http://localhost:11434"
-_ollama_model: str = "llava:13b"
+_ollama_url: str = OLLAMA_URL
+_ollama_model: str = DEFAULT_MODEL
 _setup_mode: bool = False
 
 
@@ -193,10 +194,15 @@ async def sync_status() -> dict:
     if not root_str:
         return {"new": 0, "removed": 0, "root": None}
     root = Path(root_str)
+    from .constants import caption_version
+    stale = _store.count_stale_captions(caption_version(_ollama_model))
     if not root.exists():
-        return {"new": 0, "removed": 0, "root": root_str, "root_missing": True}
+        return {"new": 0, "removed": 0, "stale": stale, "root": root_str, "root_missing": True}
     new_count = _store.count_unindexed(root)
-    return {"new": new_count, "removed": 0, "root": root_str, "count": _store.count()}
+    return {
+        "new": new_count, "removed": 0, "stale": stale,
+        "root": root_str, "count": _store.count(),
+    }
 
 
 @app.get("/api/setup/progress")

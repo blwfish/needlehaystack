@@ -8,8 +8,9 @@ import click
 import uvicorn
 from rich.console import Console
 
+from .constants import DEFAULT_MODEL
+
 DEFAULT_DB = Path.home() / ".needlestack" / "index.db"
-DEFAULT_MODEL = "llava:13b"
 DEFAULT_OLLAMA = "http://localhost:11434"
 DEFAULT_PORT = 8484
 UI_PATH = Path(__file__).parent / "ui"
@@ -29,7 +30,8 @@ def main() -> None:
 @click.option("--model", default=DEFAULT_MODEL, show_default=True, help="Ollama vision model")
 @click.option("--ollama", default=DEFAULT_OLLAMA, show_default=True, help="Ollama base URL")
 @click.option("--force", is_flag=True, help="Re-index already-indexed files")
-def index(directory: Path, db: str, model: str, ollama: str, force: bool) -> None:
+@click.option("--thorough", is_flag=True, help="Add a dedicated OCR pass for reporting marks (~2x slower)")
+def index(directory: Path, db: str, model: str, ollama: str, force: bool, thorough: bool) -> None:
     """Index a directory of images."""
     from .captioner import Captioner
     from .embedder import Embedder
@@ -51,7 +53,9 @@ def index(directory: Path, db: str, model: str, ollama: str, force: bool) -> Non
     if store.count() > 0 and not force:
         console.print(f"  resuming — [dim]{store.count()} already indexed[/dim]")
 
-    indexed, skipped, failed = index_directory(directory, store, captioner, embedder, force=force)
+    indexed, skipped, failed = index_directory(
+        directory, store, captioner, embedder, force=force, thorough=thorough
+    )
     store.set_config("indexed_root", str(directory.resolve()))
 
     console.print(

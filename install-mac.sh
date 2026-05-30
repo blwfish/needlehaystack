@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-LLAVA_MODEL="llava:13b"
-MIN_DISK_GB=14        # ~8GB model + ~3GB pixi env + 3GB buffer
+LLAVA_MODEL="qwen2.5vl:7b"   # strong in-image text/OCR for reporting marks
+MIN_DISK_GB=12        # ~6GB model + ~3GB pixi env + 3GB buffer
 OLLAMA_TIMEOUT=30     # seconds to wait for Ollama to start
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$HOME/.needlestack"

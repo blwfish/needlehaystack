@@ -14,7 +14,7 @@ needlestack indexes a folder of images using a local vision-language model to wr
 
 ## How it works
 
-1. **Index** — for each image, a VLM ([llava:13b](https://ollama.com/library/llava) via Ollama) writes a detailed caption; [OpenCLIP](https://github.com/mlfoundations/open_clip) generates a vector embedding. Both are stored in SQLite.
+1. **Index** — for each image, a VLM ([qwen2.5vl:7b](https://ollama.com/library/qwen2.5vl) via Ollama) reads the scene *and the text in it* — reporting marks, road numbers, heralds — into a structured, searchable caption; [OpenCLIP](https://github.com/mlfoundations/open_clip) generates a vector embedding. Both are stored in SQLite.
 2. **Search** — your query is expanded to synonyms via the same LLM, then matched against captions with SQLite FTS5 (BM25) and against embeddings with cosine similarity. Results are merged and ranked.
 3. **Browse** — a small local web UI shows thumbnails; click to open in your default viewer, hover for the "show in Finder" button.
 
@@ -45,7 +45,7 @@ install-windows.bat
 
 ```bash
 pixi install
-ollama pull llava:13b
+ollama pull qwen2.5vl:7b
 
 # Index your photos (one-time, resumes if interrupted)
 pixi run needlestack index /path/to/photos
@@ -69,9 +69,10 @@ needlestack doctor              Diagnostic report — use --out report.txt to sa
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `~/.needlestack/index.db` | SQLite database path |
-| `--model` | `llava:13b` | Ollama vision model |
+| `--model` | `qwen2.5vl:7b` | Ollama vision model |
 | `--ollama` | `http://localhost:11434` | Ollama base URL |
 | `--force` | off | Re-caption already-indexed files |
+| `--thorough` | off | Add a dedicated OCR pass for reporting marks (~2× slower) |
 
 **`serve` options**
 
@@ -88,8 +89,8 @@ Indexing is incremental — re-running `index` on the same folder only processes
 ## Requirements
 
 - Python 3.12+
-- [Ollama](https://ollama.com) with `llava:13b` pulled
-- ~14 GB disk space (model + environment + index)
+- [Ollama](https://ollama.com) with `qwen2.5vl:7b` pulled
+- ~12 GB disk space (model + environment + index)
 - macOS 12+ or Windows 10+
 
 [pixi](https://pixi.sh) is used for environment management and handles all Python dependencies including PyTorch automatically.

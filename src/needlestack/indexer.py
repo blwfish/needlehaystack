@@ -13,8 +13,15 @@ from rich.progress import (
 )
 
 from .captioner import Captioner
+from .constants import caption_version
 from .embedder import Embedder
 from .store import Store
+
+
+def current_caption_version(captioner: Captioner) -> str:
+    """Identity of the captioning pipeline. Changing the model or the prompt schema
+    changes this string, which auto-invalidates older captions on the next index."""
+    return caption_version(captioner.model)
 
 RAW_EXTENSIONS = {
     ".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".raf", ".dng", ".pef",
@@ -86,6 +93,7 @@ def index_directory(
     captioner: Captioner,
     embedder: Embedder,
     force: bool = False,
+    thorough: bool = False,
     on_progress: Callable[[int, int, int, int, str], None] | None = None,
 ) -> tuple[int, int, int]:
     """Index a directory. Returns (indexed, skipped, failed).
@@ -96,6 +104,7 @@ def index_directory(
     images = find_images(root)
     indexed = skipped = failed = 0
     silent = on_progress is not None
+    version = current_caption_version(captioner)
 
     def _notify(current: str = ""):
         if on_progress:
@@ -122,7 +131,10 @@ def index_directory(
 
             hash_ = _file_hash(path)
 
-            if not force and store.get_hash(str(path)) == hash_:
+            # Skip only when the file is unchanged AND its caption came from the
+            # current model/prompt — a model upgrade or prompt bump re-captions.
+            if (not force and store.get_hash(str(path)) == hash_
+                    and store.get_caption_version(str(path)) == version):
                 skipped += 1
                 if progress_ctx:
                     progress_ctx.advance(task)
@@ -131,10 +143,17 @@ def index_directory(
 
             try:
                 image = _load_image(path)
-                caption = captioner.caption(image)
+                result = captioner.caption(image, thorough=thorough)
                 embedding = embedder.embed_image(image)
                 thumb = _thumbnail(image)
-                store.upsert(str(path), hash_, caption, embedding, thumb)
+                store.upsert(
+                    str(path), hash_, result.caption, embedding, thumb,
+                    reporting_marks=result.reporting_marks,
+                    equipment=result.equipment,
+                    structured_json=result.structured_json,
+                    is_railroad=int(result.is_railroad),
+                    caption_version=version,
+                )
                 indexed += 1
             except Exception as e:
                 if progress_ctx:

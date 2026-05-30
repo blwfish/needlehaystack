@@ -25,10 +25,30 @@ def test_fts_query_phrases():
 
 # --- _expand_query ---
 
-def test_expand_query_returns_original_on_failure():
+def test_expand_query_returns_original_plus_taxonomy_on_failure():
+    """On LLM failure, the original term plus deterministic taxonomy synonyms still
+    come back — known railroad terms expand even with Ollama down."""
     with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
         result = _expand_query("caboose")
-    assert result == ["caboose"]
+    assert result[0] == "caboose"
+    assert "waycar" in result and "crummy" in result
+
+
+def test_expand_query_unknown_term_on_failure_is_bare():
+    """A term not in the taxonomy and with the LLM down expands to just itself."""
+    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+        result = _expand_query("automobile")
+    assert result == ["automobile"]
+
+
+def test_expand_query_unions_taxonomy_on_success():
+    """Taxonomy synonyms are unioned with LLM output even when the LLM succeeds."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"response": "some-llm-synonym"}
+    with patch("needlestack.search.httpx.post", return_value=mock_resp):
+        result = _expand_query("caboose")
+    assert "waycar" in result          # from taxonomy
+    assert "some-llm-synonym" in result  # from LLM
 
 
 def test_expand_query_deduplicates():
@@ -177,7 +197,7 @@ def test_expand_query_logs_warning_on_failure(caplog):
     with patch("needlestack.search.httpx.post", side_effect=Exception("conn refused")):
         with caplog.at_level(logging.WARNING, logger="needlestack.search"):
             result = _expand_query("caboose")
-    assert result == ["caboose"]
+    assert result[0] == "caboose"
     assert any("expansion failed" in r.message.lower() for r in caplog.records)
 
 

@@ -2,8 +2,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$LLAVA_MODEL     = "llava:13b"
-$MIN_DISK_GB     = 14
+$LLAVA_MODEL     = "qwen2.5vl:7b"   # strong in-image text/OCR for reporting marks
+$MIN_DISK_GB     = 12
 $OLLAMA_TIMEOUT  = 60   # seconds to wait for Ollama service
 $SCRIPT_DIR      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LOG_DIR         = Join-Path $env:USERPROFILE ".needlestack"

@@ -1,9 +1,10 @@
+import json
 import logging
 import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
-from needlestack.captioner import Captioner
+from needlestack.captioner import Captioner, CaptionResult
 
 
 def make_image():
@@ -24,27 +25,127 @@ def mock_generate_response(text, done_reason="stop"):
     return resp
 
 
-# --- caption() ---
+def mock_json_generate(payload, done_reason="stop"):
+    return mock_generate_response(json.dumps(payload), done_reason)
 
-def test_caption_returns_response_text():
+
+# --- caption(): structured output ---
+
+def test_caption_returns_structured_result():
     c = Captioner()
-    with patch.object(c._client, "post", return_value=mock_generate_response("a steam locomotive")):
+    payload = {
+        "is_railroad": True,
+        "description": "A steam locomotive at a depot.",
+        "setting": "depot",
+        "era": "steam era",
+        "equipment": [
+            {"type": "steam locomotive", "road_name": "Santa Fe",
+             "reporting_marks": "ATSF", "road_number": "3751", "details": "4-8-4"}
+        ],
+        "visible_text": ["ATSF", "3751", "SANTA FE"],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
         result = c.caption(make_image())
-    assert result == "a steam locomotive"
+    assert isinstance(result, CaptionResult)
+    assert result.is_railroad is True
+    assert "steam locomotive" in result.caption
+    # High-value identifiers land in the weighted reporting_marks field.
+    assert "ATSF" in result.reporting_marks and "3751" in result.reporting_marks
+    # Equipment type + road name land in the equipment field.
+    assert "steam locomotive" in result.equipment and "Santa Fe" in result.equipment
+    # Raw JSON retained so nothing is silently dropped.
+    assert json.loads(result.structured_json)["era"] == "steam era"
     c.close()
 
 
-def test_caption_strips_whitespace():
+def test_caption_description_strips_and_populates_caption():
     c = Captioner()
-    with patch.object(c._client, "post", return_value=mock_generate_response("  a boxcar  ")):
+    payload = {"is_railroad": True, "description": "  a boxcar  "}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
         result = c.caption(make_image())
-    assert result == "a boxcar"
+    assert result.description == "a boxcar"
+    assert result.caption.startswith("a boxcar")
+    c.close()
+
+
+def test_caption_missing_keys_safe_defaults():
+    """Only the required `description` present — everything else defaults, no crash."""
+    c = Captioner()
+    payload = {"is_railroad": False, "description": "a generic photo"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.is_railroad is False
+    assert result.reporting_marks == ""
+    assert result.equipment == ""
+    assert result.caption == "a generic photo"
+    c.close()
+
+
+def test_caption_non_railroad_routing():
+    """is_railroad False with no equipment → caption is just the description."""
+    c = Captioner()
+    payload = {"is_railroad": False, "description": "a dog in a field",
+               "equipment": [], "visible_text": []}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.is_railroad is False
+    assert result.caption == "a dog in a field"
+    c.close()
+
+
+def test_caption_unknown_equipment_type_kept_and_logged(caplog):
+    """Ambiguous case: a categorical the taxonomy doesn't know must be KEPT (not
+    dropped or coerced) and surfaced in the log."""
+    c = Captioner()
+    payload = {
+        "is_railroad": True,
+        "description": "an odd car",
+        "equipment": [{"type": "schnabel car", "road_name": "", "reporting_marks": "",
+                       "road_number": "", "details": ""}],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack.captioner"):
+            result = c.caption(make_image())
+    assert "schnabel car" in result.equipment          # kept
+    assert any("schnabel car" in r.message for r in caplog.records)  # logged
+    c.close()
+
+
+def test_caption_malformed_json_falls_back_to_plain():
+    """The ambiguous failure case: non-JSON model output must fall back to a plain
+    free-text caption rather than crashing or losing the image."""
+    c = Captioner()
+    responses = [
+        mock_generate_response("this is not json at all"),   # structured call
+        mock_generate_response("a plain caption of a train"),  # fallback call
+    ]
+    with patch.object(c._client, "post", side_effect=responses):
+        result = c.caption(make_image())
+    assert isinstance(result, CaptionResult)
+    assert result.caption == "a plain caption of a train"
+    c.close()
+
+
+def test_caption_thorough_merges_ocr_pass():
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a tank car",
+               "equipment": [], "visible_text": ["UTLX"]}
+    responses = [
+        mock_json_generate(payload),                        # structured call
+        mock_generate_response("UTLX\n640123\nSHELL"),       # dedicated OCR pass
+    ]
+    with patch.object(c._client, "post", side_effect=responses):
+        result = c.caption(make_image(), thorough=True)
+    # OCR-only tokens not in the structured pass are merged into the marks field.
+    assert "640123" in result.reporting_marks
+    assert "SHELL" in result.reporting_marks
     c.close()
 
 
 def test_caption_logs_warning_on_truncation(caplog):
     c = Captioner()
-    with patch.object(c._client, "post", return_value=mock_generate_response("truncated mid", done_reason="length")):
+    payload = {"is_railroad": True, "description": "truncated mid"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload, done_reason="length")):
         with caplog.at_level(logging.WARNING, logger="needlestack.captioner"):
             c.caption(make_image())
     assert any("truncated" in r.message.lower() or "token limit" in r.message.lower()
@@ -54,7 +155,8 @@ def test_caption_logs_warning_on_truncation(caplog):
 
 def test_caption_no_warning_on_normal_stop(caplog):
     c = Captioner()
-    with patch.object(c._client, "post", return_value=mock_generate_response("a caboose", done_reason="stop")):
+    payload = {"is_railroad": True, "description": "a caboose"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload, done_reason="stop")):
         with caplog.at_level(logging.WARNING, logger="needlestack.captioner"):
             c.caption(make_image())
     assert not any("truncated" in r.message.lower() or "token limit" in r.message.lower()
@@ -74,25 +176,25 @@ def test_check_returns_false_when_ollama_unreachable():
 
 
 def test_check_requires_exact_model_match():
-    """M5: llava:7b must NOT satisfy a requirement for llava:13b."""
-    c = Captioner(model="llava:13b")
-    with patch.object(c._client, "get", return_value=mock_tags_response(["llava:7b"])):
+    """M5: a different tag must NOT satisfy a requirement for an exact model."""
+    c = Captioner(model="qwen2.5vl:7b")
+    with patch.object(c._client, "get", return_value=mock_tags_response(["qwen2.5vl:3b"])):
         ok, msg = c.check()
     assert not ok
-    assert "llava:13b" in msg
+    assert "qwen2.5vl:7b" in msg
     c.close()
 
 
 def test_check_returns_ok_for_exact_match():
-    c = Captioner(model="llava:13b")
-    with patch.object(c._client, "get", return_value=mock_tags_response(["llava:13b", "llava:7b"])):
+    c = Captioner(model="qwen2.5vl:7b")
+    with patch.object(c._client, "get", return_value=mock_tags_response(["qwen2.5vl:7b", "qwen2.5vl:3b"])):
         ok, msg = c.check()
     assert ok
     c.close()
 
 
 def test_check_returns_false_when_model_absent():
-    c = Captioner(model="llava:13b")
+    c = Captioner(model="qwen2.5vl:7b")
     with patch.object(c._client, "get", return_value=mock_tags_response([])):
         ok, msg = c.check()
     assert not ok
