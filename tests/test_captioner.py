@@ -321,6 +321,9 @@ def test_naval_caption_uses_vessels_field():
     assert "USS Spruance" in result.reporting_marks  # ship_name is high-priority
     assert "destroyer" in result.equipment     # type is mid-priority
     assert "Spruance-class" in result.equipment  # class_name is mid-priority
+    # Negative: mid-priority fields must NOT bleed into the high-priority column
+    assert "Spruance-class" not in result.reporting_marks
+    assert "destroyer" not in result.reporting_marks
     assert "View: broadside" in result.caption
     c.close()
 
@@ -412,6 +415,9 @@ def test_armor_caption_uses_vehicles_field():
     assert "Tiger I" in result.equipment           # vehicle_name mid-priority
     assert "Germany" in result.equipment           # nation mid-priority
     assert "tank" in result.equipment              # type mid-priority
+    # Negative: mid-priority fields must NOT bleed into the high-priority column
+    assert "Tiger I" not in result.reporting_marks
+    assert "Germany" not in result.reporting_marks
     assert "View: three-quarter front" in result.caption
     c.close()
 
@@ -461,6 +467,9 @@ def test_aviation_caption_uses_aircraft_field():
     assert "Memphis Belle" in result.reporting_marks  # nickname high-priority
     assert "B-17 Flying Fortress" in result.equipment  # aircraft_model mid-priority
     assert "USAAF" in result.equipment             # operator mid-priority
+    # Negative: mid-priority fields must NOT bleed into the high-priority column
+    assert "B-17 Flying Fortress" not in result.reporting_marks
+    assert "USAAF" not in result.reporting_marks
     assert "View: broadside/profile" in result.caption
     c.close()
 
@@ -484,7 +493,6 @@ def test_aviation_no_nickname_still_works():
     }
     with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
         result = c.caption(make_image())
-    assert "EE-549" in result.reporting_marks
+    assert result.reporting_marks.strip() == "EE-549"  # exactly one token; empty nickname not added
     assert "Spitfire Mk IX" in result.equipment
-    assert "" not in result.reporting_marks.split()   # no empty token
     c.close()

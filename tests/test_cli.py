@@ -243,9 +243,7 @@ def test_serve_port_in_use_different_process_finds_next_free(tmp_path):
         result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
     assert result.exit_code == 0
     # uvicorn called with a port other than 8484
-    call_kwargs = mock_uvicorn.call_args
-    assert call_kwargs.kwargs.get("port", call_kwargs.args[1] if len(call_kwargs.args) > 1 else None) != 8484 \
-        or call_kwargs.kwargs.get("port") != 8484
+    assert mock_uvicorn.call_args.kwargs["port"] != 8484
 
 
 def test_serve_no_free_port_exits_1(tmp_path):

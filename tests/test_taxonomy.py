@@ -91,14 +91,16 @@ def test_aviation_domain_fields():
 
 
 def test_domain_item_fields_have_type_and_details():
-    """Every domain must start with type (mid) and end with details (phrase)."""
+    """Every domain must start with type (mid), end with details (phrase), and have unique names."""
     for domain in DOMAINS.values():
         field_names = [f for f, _ in domain.item_fields]
         weights = {f: w for f, w in domain.item_fields}
         assert field_names[0] == "type", f"{domain.name}: first item_field must be 'type'"
-        assert "details" in field_names, f"{domain.name}: 'details' must be in item_fields"
+        assert field_names[-1] == "details", f"{domain.name}: last item_field must be 'details'"
         assert weights["type"] == "mid", f"{domain.name}: 'type' must be mid-priority"
         assert weights["details"] == "phrase", f"{domain.name}: 'details' must be phrase"
+        assert len(field_names) == len(set(field_names)), \
+            f"{domain.name}: item_field names must be unique (duplicate would double-count in caption)"
 
 
 def test_domain_prompt_fragments_required_keys():
