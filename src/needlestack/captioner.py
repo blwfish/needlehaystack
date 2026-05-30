@@ -8,75 +8,73 @@ import httpx
 from PIL import Image
 
 from . import taxonomy
+from .taxonomy import Domain
 from .constants import DEFAULT_MODEL, OLLAMA_URL
 
 _log = logging.getLogger(__name__)
 
-# JSON schema handed to Ollama's `format` so the model returns parseable fields rather
-# than free prose. Every field here is enumerated and given a disposition in store/
-# synthesis — none is captured without a home (data-capture backward-chaining rule).
-CAPTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "is_railroad": {"type": "boolean"},
-        "description": {"type": "string"},
-        "setting": {"type": "string"},
-        "era": {"type": "string"},
-        "equipment": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string"},
-                    "road_name": {"type": "string"},
-                    "reporting_marks": {"type": "string"},
-                    "road_number": {"type": "string"},
-                    "details": {"type": "string"},
-                },
-            },
-        },
-        "visible_text": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["is_railroad", "description"],
-}
-
-
-def _prompt() -> str:
-    return (
-        "This is a railroad or railway photograph (or might be). Analyze it for a "
-        "searchable photo index and return JSON matching the schema.\n"
-        "- is_railroad: true only if the photo actually shows railroad subject matter.\n"
-        "- description: plain-sentence description with railroad specificity. If it is "
-        "NOT a railroad photo, describe it normally with equal specificity.\n"
-        "- equipment: one entry per distinct piece of visible rolling stock. Use exact "
-        f"terminology for `type` from this list when it applies: {taxonomy.equipment_terms_prompt()}. "
-        "For steam, name the wheel arrangement if legible, e.g. "
-        f"{taxonomy.wheel_arrangements_prompt()}. Fill road_name (railroad), "
-        "reporting_marks (e.g. ATSF, UP), and road_number ONLY from text you can "
-        "actually read on the equipment; leave blank if not legible.\n"
-        f"- setting: one of, or near: {taxonomy.settings_prompt()}.\n"
-        "- era: approximate period if inferable (e.g. 'steam era', '1950s', 'modern').\n"
-        "- visible_text: EVERY piece of text you can read anywhere in the image — "
-        "reporting marks, road numbers, heralds, builder's plates, station signs, "
-        "lettering. Transcribe exactly; do not guess."
-    )
-
-# Free-text prompt used as the fallback when structured JSON can't be parsed, and as the
-# base of the dedicated OCR pass.
-_FALLBACK_PROMPT = (
-    "This is a railroad or railway photograph. Describe it for a searchable photo index "
-    "using exact railroad terminology for any rolling stock, including railroad names, "
-    "reporting marks, and road numbers if legible. Describe the setting and era. "
-    "If this is not a railroad photo, describe it normally with equal specificity. "
-    "Write in plain sentences, no preamble."
-)
-
 _OCR_PROMPT = (
-    "List every piece of text legible in this image — reporting marks, road numbers, "
-    "railroad names, heralds, builder's plates, station signs, any lettering. "
+    "List every piece of text legible in this image — identifiers, names, numbers, "
+    "heralds, plates, signs, any lettering. "
     "One item per line. Transcribe exactly what you can read; do not guess or invent. "
     "If no text is legible, reply with nothing."
 )
+
+
+def _make_schema(domain: Domain) -> dict:
+    """Build the JSON schema Ollama enforces for this domain's caption output."""
+    item_props = {f: {"type": "string"} for f, _ in domain.item_fields}
+    return {
+        "type": "object",
+        "properties": {
+            domain.subject_field: {"type": "boolean"},
+            "description": {"type": "string"},
+            "setting": {"type": "string"},
+            "era": {"type": "string"},
+            "view": {"type": "string"},
+            domain.items_field: {
+                "type": "array",
+                "items": {"type": "object", "properties": item_props},
+            },
+            "visible_text": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": [domain.subject_field, "description"],
+    }
+
+
+def _make_prompt(domain: Domain) -> str:
+    """Build the caption prompt for this domain."""
+    frags = domain.prompt_fragments
+    preamble = frags["preamble"]
+    subject_qualifier = frags["subject_qualifier"]
+    item_singular = frags["item_singular"]
+    id_instruction = frags["id_instruction"]
+    era_examples = frags["era_examples"]
+    view_instruction = frags["view_instruction"]
+    type_note = frags.get("type_note", "")
+
+    type_instruction = (
+        f"Use exact terminology for `type` from this list when it applies: "
+        f"{domain.subject_types_prompt()}."
+    )
+    if type_note:
+        type_instruction = f"{type_instruction} {type_note}"
+
+    return (
+        f"{preamble} Analyze it for a searchable photo index and return JSON matching "
+        "the schema.\n"
+        f"- {domain.subject_field}: {subject_qualifier}.\n"
+        "- description: plain-sentence description with specific detail. Name only what "
+        "you can visually confirm; use 'appears to be' when uncertain. If this is not a "
+        "matching photo, describe what it actually shows.\n"
+        f"- {domain.items_field}: one entry per distinct {item_singular} visible. "
+        f"{type_instruction} {id_instruction}\n"
+        f"- setting: one of, or similar to: {domain.settings_prompt()}.\n"
+        f"- era: approximate period if inferable (e.g. {era_examples}).\n"
+        f"- view: camera perspective — one of: {view_instruction}.\n"
+        "- visible_text: EVERY piece of text you can read anywhere in the image. "
+        "Transcribe exactly what you can read; do not guess or invent."
+    )
 
 
 @dataclass
@@ -85,16 +83,23 @@ class CaptionResult:
     fields map to dedicated store columns (see Store.upsert)."""
     caption: str
     description: str = ""
-    is_railroad: bool = False
-    reporting_marks: str = ""   # flattened marks/road numbers/visible text (FTS-weighted high)
-    equipment: str = ""         # flattened equipment types + road names (FTS-weighted mid)
+    is_railroad: bool = False   # semantically: "is_subject" — true if on-topic for the domain
+    reporting_marks: str = ""   # flattened high-priority identifiers (FTS-weighted high)
+    equipment: str = ""         # flattened subject types + class/road names (FTS-weighted mid)
     structured_json: str = ""   # raw model JSON, so nothing is ever silently dropped
+    view: str = ""              # camera perspective (broadside, bow quarter, etc.)
 
 
 class Captioner:
-    def __init__(self, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_URL):
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        base_url: str = OLLAMA_URL,
+        domain: Domain = taxonomy.RAILROAD,
+    ):
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self._domain = domain
         self._client = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
 
     # -- public API ---------------------------------------------------------------
@@ -103,11 +108,13 @@ class Captioner:
         """Caption an image, returning structured fields.
 
         Default is a single JSON-schema-constrained call. With `thorough=True`, a
-        second dedicated OCR pass is merged in to maximize reporting-mark recall.
+        second dedicated OCR pass is merged in to maximize identifier recall.
         """
         b64 = self._encode(image)
+        schema = _make_schema(self._domain)
+        prompt = _make_prompt(self._domain)
         try:
-            data = self._generate(_prompt(), b64, schema=CAPTION_SCHEMA)
+            data = self._generate(prompt, b64, schema=schema)
             parsed = json.loads(data["response"])
             if not isinstance(parsed, dict):
                 raise ValueError("model returned non-object JSON")
@@ -118,7 +125,7 @@ class Captioner:
         if thorough:
             self._merge_ocr_pass(parsed, b64)
 
-        return self._build_result(parsed)
+        return self._build_result(parsed, self._domain)
 
     def check(self) -> tuple[bool, str]:
         """Return (ok, message). Checks Ollama is running and model is available."""
@@ -163,8 +170,9 @@ class Captioner:
 
     def _plain_caption(self, b64: str) -> CaptionResult:
         """Old single-call behavior, used when structured parsing fails."""
+        fallback_prompt = self._domain.prompt_fragments.get("fallback_preamble", "")
         try:
-            data = self._generate(_FALLBACK_PROMPT, b64)
+            data = self._generate(fallback_prompt, b64)
             text = data["response"].strip()
         except (KeyError, httpx.HTTPError) as e:
             _log.warning("Plain caption also failed: %s", e)
@@ -189,66 +197,68 @@ class Captioner:
                 seen.add(ln.lower())
         parsed["visible_text"] = existing
 
-    def _build_result(self, parsed: dict) -> CaptionResult:
+    def _build_result(self, parsed: dict, domain: Domain) -> CaptionResult:
         description = str(parsed.get("description") or "").strip()
         setting = str(parsed.get("setting") or "").strip()
         era = str(parsed.get("era") or "").strip()
-        is_railroad = bool(parsed.get("is_railroad"))
+        view = str(parsed.get("view") or "").strip()
+        is_subject = bool(parsed.get(domain.subject_field))
 
-        equipment = parsed.get("equipment")
-        equipment = equipment if isinstance(equipment, list) else []
+        items = parsed.get(domain.items_field)
+        items = items if isinstance(items, list) else []
         visible_text = parsed.get("visible_text")
         visible_text = [str(t).strip() for t in visible_text if str(t).strip()] \
             if isinstance(visible_text, list) else []
 
-        valid_types = taxonomy.valid_equipment_types()
-        mark_tokens: list[str] = []      # high-value identifiers (marks, road numbers)
-        equip_tokens: list[str] = []     # equipment types + road names
+        mark_tokens: list[str] = []      # high-value identifiers (hull numbers, marks)
+        equip_tokens: list[str] = []     # subject types + class/road names
         equip_phrases: list[str] = []    # human-readable per-item phrases for the caption
 
-        for item in equipment:
+        for item in items:
             if not isinstance(item, dict):
                 continue
             etype = str(item.get("type") or "").strip()
-            road = str(item.get("road_name") or "").strip()
-            marks = str(item.get("reporting_marks") or "").strip()
-            number = str(item.get("road_number") or "").strip()
-            details = str(item.get("details") or "").strip()
+            if etype and etype.lower() not in domain.valid_subject_types:
+                _log.info("Unknown %s type from model (kept): %r", domain.name, etype)
 
-            if etype and etype.lower() not in valid_types:
-                # Categorical from an external source: keep it, but surface the unknown
-                # rather than silently dropping or coercing it.
-                _log.info("Unknown equipment type from model (kept): %r", etype)
-            if etype:
-                equip_tokens.append(etype)
-            if road:
-                equip_tokens.append(road)
-            if marks:
-                mark_tokens.append(marks)
-            if number:
-                mark_tokens.append(number)
-            phrase = " ".join(p for p in [road, marks, number, etype, details] if p)
+            phrase_parts: list[str] = []
+            for field_name, fts_weight in domain.item_fields:
+                value = str(item.get(field_name) or "").strip()
+                if not value:
+                    continue
+                if fts_weight == "high":
+                    mark_tokens.append(value)
+                elif fts_weight == "mid":
+                    equip_tokens.append(value)
+                phrase_parts.append(value)
+
+            phrase = " ".join(phrase_parts)
             if phrase:
                 equip_phrases.append(phrase)
 
         # visible_text is the OCR catch-all — every legible token, weighted as a mark.
         mark_tokens.extend(visible_text)
 
-        caption = self._synthesize(description, equip_phrases, setting, era, visible_text)
+        caption = self._synthesize(description, equip_phrases, setting, era, view, visible_text)
         return CaptionResult(
             caption=caption,
             description=description,
-            is_railroad=is_railroad,
+            is_railroad=is_subject,
             reporting_marks=" ".join(dict.fromkeys(mark_tokens)),
             equipment=" ".join(dict.fromkeys(equip_tokens)),
             structured_json=json.dumps(parsed, ensure_ascii=False),
+            view=view,
         )
 
     @staticmethod
-    def _synthesize(description, equip_phrases, setting, era, visible_text) -> str:
-        # Reporting marks/road numbers are already carried by each equip_phrase (and by
-        # the weighted reporting_marks column), so no separate "Reporting marks:" line —
-        # it only duplicated tokens already present here.
+    def _synthesize(
+        description: str,
+        equip_phrases: list[str],
+        setting: str,
+        era: str,
+        view: str,
+        visible_text: list[str],
+    ) -> str:
         parts: list[str] = []
         if description:
             parts.append(description)
@@ -258,6 +268,8 @@ class Captioner:
             parts.append(f"Setting: {setting}.")
         if era:
             parts.append(f"Era: {era}.")
+        if view:
+            parts.append(f"View: {view}.")
         if visible_text:
             parts.append("Visible text: " + ", ".join(visible_text) + ".")
         return "\n".join(parts).strip()

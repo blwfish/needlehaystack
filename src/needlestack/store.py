@@ -10,7 +10,7 @@ import numpy as np
 FTS_COLUMN_WEIGHTS = (1.0, 8.0, 4.0)  # (caption, reporting_marks, equipment)
 
 # Bump when the on-disk schema changes; stamped into config by _migrate().
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Columns added to `images` beyond the original set. Single source of truth: the
 # CREATE TABLE in SCHEMA and the ALTER TABLE migration loop are both generated from
@@ -21,6 +21,7 @@ _EXTRA_COLUMNS = {
     "structured_json": "TEXT",
     "is_railroad": "INTEGER",
     "caption_version": "TEXT",
+    "view": "TEXT",
 }
 _EXTRA_DDL = "".join(f",\n    {name} {decl}" for name, decl in _EXTRA_COLUMNS.items())
 
@@ -169,14 +170,15 @@ class Store:
         structured_json: str = "",
         is_railroad: int = 0,
         caption_version: str = "",
+        view: str = "",
     ) -> None:
         self.conn.execute(
             """
             INSERT INTO images (
                 path, hash, caption, reporting_marks, equipment,
-                structured_json, is_railroad, caption_version, embedding, thumbnail
+                structured_json, is_railroad, caption_version, view, embedding, thumbnail
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 hash=excluded.hash,
                 caption=excluded.caption,
@@ -185,12 +187,13 @@ class Store:
                 structured_json=excluded.structured_json,
                 is_railroad=excluded.is_railroad,
                 caption_version=excluded.caption_version,
+                view=excluded.view,
                 embedding=excluded.embedding,
                 thumbnail=excluded.thumbnail,
                 indexed_at=datetime('now')
             """,
             (path, hash_, caption, reporting_marks, equipment, structured_json,
-             int(is_railroad), caption_version, _enc(embedding), thumbnail),
+             int(is_railroad), caption_version, view, _enc(embedding), thumbnail),
         )
         self.conn.commit()
         self._embedding_cache = None  # invalidate on write
@@ -254,9 +257,9 @@ class Store:
         ).fetchone()
         return row[0] if row else None
 
-    def get_config(self, key: str) -> str | None:
+    def get_config(self, key: str, default: str | None = None) -> str | None:
         row = self.conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
-        return row[0] if row else None
+        return row[0] if row else default
 
     def set_config(self, key: str, value: str) -> None:
         self.conn.execute(

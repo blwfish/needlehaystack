@@ -9,6 +9,7 @@ import uvicorn
 from rich.console import Console
 
 from .constants import DEFAULT_MODEL, OLLAMA_URL as DEFAULT_OLLAMA, MODEL_PRESETS
+from .taxonomy import DOMAINS
 
 DEFAULT_DB = Path.home() / ".needlestack" / "index.db"
 DEFAULT_PORT = 8484
@@ -33,19 +34,24 @@ def main() -> None:
 @click.option("--ollama", default=DEFAULT_OLLAMA, show_default=True, help="Ollama base URL")
 @click.option("--force", is_flag=True, help="Re-index already-indexed files")
 @click.option("--thorough", is_flag=True, help="Add a dedicated OCR pass for reporting marks (~2x slower)")
+@click.option("--domain", default="railroad",
+              type=click.Choice(list(DOMAINS), case_sensitive=False),
+              help="Photo collection domain (default: railroad)")
 def index(directory: Path, db: str, model: str | None, preset: str | None,
-          ollama: str, force: bool, thorough: bool) -> None:
+          ollama: str, force: bool, thorough: bool, domain: str) -> None:
     """Index a directory of images."""
     from .captioner import Captioner
     from .embedder import Embedder
     from .indexer import index_directory
     from .store import Store
+    from .taxonomy import get_domain
 
     if model and preset:
         console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
         sys.exit(1)
     resolved_model = model or MODEL_PRESETS.get(preset or "", DEFAULT_MODEL)
-    captioner = Captioner(model=resolved_model, base_url=ollama)
+    selected_domain = get_domain(domain)
+    captioner = Captioner(model=resolved_model, base_url=ollama, domain=selected_domain)
     ok, msg = captioner.check()
     if not ok:
         console.print(f"[red]Error:[/red] {msg}")
@@ -56,7 +62,11 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
     embedder = Embedder()
 
     console.print(f"[green]Indexing[/green] {directory}")
-    console.print(f"  model: [cyan]{resolved_model}[/cyan]  db: [cyan]{db_path}[/cyan]")
+    console.print(
+        f"  model: [cyan]{resolved_model}[/cyan]  "
+        f"domain: [cyan]{domain}[/cyan]  "
+        f"db: [cyan]{db_path}[/cyan]"
+    )
     if store.count() > 0 and not force:
         console.print(f"  resuming — [dim]{store.count()} already indexed[/dim]")
 
@@ -64,6 +74,7 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
         directory, store, captioner, embedder, force=force, thorough=thorough
     )
     store.set_config("indexed_root", str(directory.resolve()))
+    store.set_config("indexed_domain", domain)
 
     console.print(
         f"\n[green]Done.[/green]  "

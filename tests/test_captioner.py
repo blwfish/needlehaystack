@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from needlestack.captioner import Captioner, CaptionResult
+from needlestack.taxonomy import NAVAL, RAILROAD
 
 
 def make_image():
@@ -257,4 +258,126 @@ def test_connect_timeout_is_separate():
     t = c._client.timeout
     assert isinstance(t, httpx.Timeout)
     assert t.connect < t.read
+    c.close()
+
+
+# --- view field ---
+
+def test_caption_view_field_in_result():
+    """view from the model JSON lands in CaptionResult.view and the caption text."""
+    c = Captioner()
+    payload = {
+        "is_railroad": True,
+        "description": "A locomotive at a yard.",
+        "view": "broadside",
+        "equipment": [],
+        "visible_text": [],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.view == "broadside"
+    assert "View: broadside" in result.caption
+    c.close()
+
+
+def test_caption_view_absent_is_empty():
+    """Missing view field defaults to empty string, no crash."""
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a scene"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.view == ""
+    assert "View:" not in result.caption
+    c.close()
+
+
+# --- naval domain ---
+
+def test_naval_caption_uses_vessels_field():
+    """The naval domain reads from 'vessels' not 'equipment', and hull_number goes to
+    reporting_marks (high FTS weight), class_name to equipment (mid weight)."""
+    c = Captioner(domain=NAVAL)
+    payload = {
+        "is_naval": True,
+        "description": "A destroyer underway.",
+        "setting": "underway",
+        "era": "Cold War",
+        "view": "broadside",
+        "vessels": [
+            {
+                "type": "destroyer",
+                "class_name": "Spruance-class",
+                "hull_number": "DD-963",
+                "ship_name": "USS Spruance",
+                "details": "gray camouflage",
+            }
+        ],
+        "visible_text": ["DD-963"],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.is_railroad is True          # semantically "is_subject" for the domain
+    assert "DD-963" in result.reporting_marks  # hull_number is high-priority
+    assert "USS Spruance" in result.reporting_marks  # ship_name is high-priority
+    assert "destroyer" in result.equipment     # type is mid-priority
+    assert "Spruance-class" in result.equipment  # class_name is mid-priority
+    assert "View: broadside" in result.caption
+    c.close()
+
+
+def test_naval_domain_subject_field_false():
+    """is_naval=False (non-naval photo) maps to is_railroad=False on the result."""
+    c = Captioner(domain=NAVAL)
+    payload = {"is_naval": False, "description": "a sunset over the ocean"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.is_railroad is False
+    c.close()
+
+
+def test_naval_unknown_vessel_type_kept_and_logged(caplog):
+    """Unknown naval vessel type is kept (not dropped) and logged."""
+    c = Captioner(domain=NAVAL)
+    payload = {
+        "is_naval": True,
+        "description": "an unusual vessel",
+        "vessels": [{"type": "hydrofoil", "hull_number": "PGH-2", "details": ""}],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack.captioner"):
+            result = c.caption(make_image())
+    assert "hydrofoil" in result.equipment   # kept
+    assert any("hydrofoil" in r.message for r in caplog.records)  # logged
+    c.close()
+
+
+def test_railroad_domain_ignores_vessels_field():
+    """Railroad captioner ignores 'vessels' key in model JSON (wrong domain payload)."""
+    c = Captioner(domain=RAILROAD)
+    payload = {
+        "is_railroad": False,
+        "description": "a ship",
+        "vessels": [{"type": "destroyer"}],   # wrong domain field — should be ignored
+        "equipment": [],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.equipment == ""   # 'vessels' key not read by railroad domain
+    c.close()
+
+
+def test_naval_fallback_prompt_mentions_naval(caplog):
+    """When structured JSON fails, the naval fallback prompt is domain-specific."""
+    c = Captioner(domain=NAVAL)
+    responses = [
+        mock_generate_response("not json"),
+        mock_generate_response("a destroyer alongside a pier"),
+    ]
+    with patch.object(c._client, "post", side_effect=responses) as mock_post:
+        result = c.caption(make_image())
+    assert result.caption == "a destroyer alongside a pier"
+    # The fallback prompt sent to Ollama should contain "naval" not "railroad"
+    fallback_call = mock_post.call_args_list[1]
+    sent_prompt = fallback_call[1]["json"]["prompt"]
+    assert "naval" in sent_prompt.lower()
     c.close()

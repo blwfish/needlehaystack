@@ -159,6 +159,7 @@ def index_directory(
                     structured_json=result.structured_json,
                     is_railroad=int(result.is_railroad),
                     caption_version=version,
+                    view=result.view,
                 )
                 indexed += 1
             except Exception as e:
