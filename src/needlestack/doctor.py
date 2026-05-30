@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from .constants import DEFAULT_MODEL
+from .constants import DEFAULT_MODEL, OLLAMA_URL
 from .search import MIN_SCORE, _expand_query, _fts_query
 
 
@@ -23,7 +23,7 @@ def _row(out: io.StringIO, label: str, value: str) -> None:
 def run(
     db_path: Path,
     query: str | None = None,
-    ollama_url: str = "http://localhost:11434",
+    ollama_url: str = OLLAMA_URL,
     ollama_model: str = DEFAULT_MODEL,
 ) -> str:
     out = io.StringIO()

@@ -152,6 +152,19 @@ async def start_indexing(req: dict) -> dict:
             _captured_db_path.parent.mkdir(parents=True, exist_ok=True)
             store = Store(_captured_db_path)
             captioner = Captioner(model=_captured_ollama_model, base_url=_captured_ollama_url)
+
+            # Fail fast and visibly if Ollama/the model isn't ready — otherwise
+            # index_directory swallows the per-image errors and the run looks "done"
+            # with everything failed and no explanation (the CLI path check()s too).
+            ok, msg = captioner.check()
+            if not ok:
+                captioner.close()
+                store.close()
+                with _index_lock:
+                    _index_state.running = False
+                    _index_state.error = msg
+                return
+
             embedder = Embedder()
 
             def _progress(total, indexed, skipped, failed, current):

@@ -8,12 +8,9 @@ import httpx
 from PIL import Image
 
 from . import taxonomy
-from .constants import DEFAULT_MODEL, OLLAMA_URL, PROMPT_SCHEMA_VERSION
+from .constants import DEFAULT_MODEL, OLLAMA_URL
 
 _log = logging.getLogger(__name__)
-
-# Re-exported from .constants (single source) for backward compatibility.
-__all__ = ["Captioner", "CaptionResult", "DEFAULT_MODEL", "OLLAMA_URL", "PROMPT_SCHEMA_VERSION"]
 
 # JSON schema handed to Ollama's `format` so the model returns parseable fields rather
 # than free prose. Every field here is enumerated and given a disposition in store/
@@ -237,8 +234,7 @@ class Captioner:
         # visible_text is the OCR catch-all — every legible token, weighted as a mark.
         mark_tokens.extend(visible_text)
 
-        caption = self._synthesize(description, equip_phrases, setting, era,
-                                   visible_text, mark_tokens)
+        caption = self._synthesize(description, equip_phrases, setting, era, visible_text)
         return CaptionResult(
             caption=caption,
             description=description,
@@ -249,7 +245,10 @@ class Captioner:
         )
 
     @staticmethod
-    def _synthesize(description, equip_phrases, setting, era, visible_text, mark_tokens) -> str:
+    def _synthesize(description, equip_phrases, setting, era, visible_text) -> str:
+        # Reporting marks/road numbers are already carried by each equip_phrase (and by
+        # the weighted reporting_marks column), so no separate "Reporting marks:" line —
+        # it only duplicated tokens already present here.
         parts: list[str] = []
         if description:
             parts.append(description)
@@ -261,6 +260,4 @@ class Captioner:
             parts.append(f"Era: {era}.")
         if visible_text:
             parts.append("Visible text: " + ", ".join(visible_text) + ".")
-        elif mark_tokens:
-            parts.append("Reporting marks: " + ", ".join(mark_tokens) + ".")
         return "\n".join(parts).strip()

@@ -133,8 +133,8 @@ def index_directory(
 
             # Skip only when the file is unchanged AND its caption came from the
             # current model/prompt — a model upgrade or prompt bump re-captions.
-            if (not force and store.get_hash(str(path)) == hash_
-                    and store.get_caption_version(str(path)) == version):
+            stored_hash, stored_version = store.get_hash_and_version(str(path))
+            if not force and stored_hash == hash_ and stored_version == version:
                 skipped += 1
                 if progress_ctx:
                     progress_ctx.advance(task)
@@ -144,6 +144,12 @@ def index_directory(
             try:
                 image = _load_image(path)
                 result = captioner.caption(image, thorough=thorough)
+                # An empty caption means captioning failed (e.g. Ollama was unreachable
+                # and even the plain-text fallback returned nothing). Treat it as a
+                # failure so the row is NOT stored with the current caption_version —
+                # otherwise the skip check above would suppress retries forever.
+                if not result.caption.strip():
+                    raise RuntimeError("captioner returned an empty caption")
                 embedding = embedder.embed_image(image)
                 thumb = _thumbnail(image)
                 store.upsert(

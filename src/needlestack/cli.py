@@ -8,10 +8,9 @@ import click
 import uvicorn
 from rich.console import Console
 
-from .constants import DEFAULT_MODEL
+from .constants import DEFAULT_MODEL, OLLAMA_URL as DEFAULT_OLLAMA
 
 DEFAULT_DB = Path.home() / ".needlestack" / "index.db"
-DEFAULT_OLLAMA = "http://localhost:11434"
 DEFAULT_PORT = 8484
 UI_PATH = Path(__file__).parent / "ui"
 

@@ -91,9 +91,13 @@ def synonyms_for(term: str) -> list[str]:
     return out
 
 
-def valid_equipment_types() -> set[str]:
-    """Canonical equipment types, for validating model-emitted categoricals."""
-    return set(EQUIPMENT.keys())
+VALID_EQUIPMENT_TYPES = frozenset(EQUIPMENT)
+
+
+def valid_equipment_types() -> frozenset[str]:
+    """Canonical equipment types, for validating model-emitted categoricals.
+    Cached module-level — called once per captioned image."""
+    return VALID_EQUIPMENT_TYPES
 
 
 def frequency_terms() -> list[str]:

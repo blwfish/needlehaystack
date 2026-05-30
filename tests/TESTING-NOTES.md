@@ -47,10 +47,10 @@ Ordered by tractability.
 
 ## Needs thread / subprocess / display harnessing
 
-- **Server background index thread — `server.py:129-185` (the `_run` closure).** The
-  whole setup-wizard pipeline (Store/Captioner/Embedder construction, `index_directory`,
-  config write, mode switch to search, and the `except` that sets `_index_state.error`)
-  runs in an untested daemon thread.
+- **Server background index thread — the `_run` closure.** The whole setup-wizard
+  pipeline (Store/Captioner/Embedder construction, the `captioner.check()` early-exit,
+  `index_directory`, config write, mode switch to search, and the `except` that sets
+  `_index_state.error`) runs in an untested daemon thread.
 
 - **Server `browse_folder` — `server.py:84-111`.** Native folder-picker dispatch
   (darwin/win32/other, cancelled dialog, exceptions) — entirely untested.
@@ -60,9 +60,8 @@ Ordered by tractability.
   the real-results + thumbnail-base64 encoding path in `/search` (server.py ~236-241)
   and a 200 from `/thumbnail` are unexercised (test store is always empty).
 
-## Also worth tidying (not coverage, but hygiene)
+## Resolved
 
-- **Server test isolation.** Fixtures mutate module globals (`srv._store`,
-  `srv._index_state`) with no teardown reset — tests pass by ordering, not isolation.
-- **Stale fixture strings.** `tests/test_server.py` fixtures still pass
-  `ollama_model="llava:13b"` (pre-upgrade); harmless but reads as stale.
+- ~~Server test isolation~~ — fixtures now reset module globals in teardown
+  (`_reset_server_globals`).
+- ~~Stale fixture strings~~ — fixtures now use `constants.DEFAULT_MODEL`/`OLLAMA_URL`.

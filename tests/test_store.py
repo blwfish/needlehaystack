@@ -279,6 +279,15 @@ def test_get_caption_version_missing(store):
     assert store.get_caption_version("/nope.jpg") is None
 
 
+def test_get_hash_and_version_combined(store):
+    store.upsert("/a.jpg", "h9", "c", fake_embedding(), b"t", caption_version="m:v2")
+    assert store.get_hash_and_version("/a.jpg") == ("h9", "m:v2")
+
+
+def test_get_hash_and_version_missing(store):
+    assert store.get_hash_and_version("/nope.jpg") == (None, None)
+
+
 def test_count_stale_captions(store):
     store.upsert("/cur.jpg", "h", "c", fake_embedding(), b"t", caption_version="m:v2")
     store.upsert("/old.jpg", "h", "c", fake_embedding(1), b"t", caption_version="m:v1")

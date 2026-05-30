@@ -335,6 +335,35 @@ def test_index_recaptions_when_version_stale(tmp_path):
     store.close()
 
 
+def test_index_empty_caption_not_stored_and_retried(tmp_path):
+    """A captioner that returns an empty caption (e.g. Ollama was down and even the
+    fallback returned nothing) must be treated as a FAILURE: the row is not stored with
+    the current caption_version, so the next run retries instead of skipping forever."""
+    from needlestack.store import Store
+    from needlestack.captioner import CaptionResult
+    img_path = tmp_path / "img" / "test.jpg"
+    img_path.parent.mkdir()
+    make_test_image(img_path)
+
+    store = Store(tmp_path / "index.db")
+    embedder = make_embedder()
+
+    # First run: captioner returns empty → counted failed, NOT stored.
+    failing = MagicMock()
+    failing.model = "m"
+    failing.caption.return_value = CaptionResult(caption="", description="")
+    indexed1, skipped1, failed1 = index_directory(img_path.parent, store, failing, embedder)
+    assert (indexed1, skipped1, failed1) == (0, 0, 1)
+    assert store.get_caption_version(str(img_path)) is None  # nothing persisted
+
+    # Second run with a working captioner: the image is retried, not skipped.
+    indexed2, skipped2, _ = index_directory(img_path.parent, store, make_captioner(), embedder)
+    assert indexed2 == 1
+    assert skipped2 == 0
+
+    store.close()
+
+
 def test_index_handles_unreadable_file(tmp_path):
     from needlestack.store import Store
     img_dir = tmp_path / "img"

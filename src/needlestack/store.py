@@ -9,8 +9,12 @@ import numpy as np
 # outrank generic prose; equipment type/road name sits in between.
 FTS_COLUMN_WEIGHTS = (1.0, 8.0, 4.0)  # (caption, reporting_marks, equipment)
 
-# Columns added to `images` beyond the original set. Used by both SCHEMA and the
-# migration so the two never drift.
+# Bump when the on-disk schema changes; stamped into config by _migrate().
+SCHEMA_VERSION = 2
+
+# Columns added to `images` beyond the original set. Single source of truth: the
+# CREATE TABLE in SCHEMA and the ALTER TABLE migration loop are both generated from
+# this dict, so they cannot drift.
 _EXTRA_COLUMNS = {
     "reporting_marks": "TEXT",
     "equipment": "TEXT",
@@ -18,6 +22,7 @@ _EXTRA_COLUMNS = {
     "is_railroad": "INTEGER",
     "caption_version": "TEXT",
 }
+_EXTRA_DDL = "".join(f",\n    {name} {decl}" for name, decl in _EXTRA_COLUMNS.items())
 
 _FTS_CREATE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS captions_fts USING fts5(
@@ -49,7 +54,11 @@ CREATE TRIGGER IF NOT EXISTS images_ad AFTER DELETE ON images BEGIN
 END;
 """
 
-SCHEMA = """
+# config + images only. The FTS table and its triggers are created in _migrate(), NOT
+# here, so that if a previous run crashed after dropping captions_fts, the next open
+# rebuilds and repopulates it — a `CREATE ... IF NOT EXISTS` here would instead recreate
+# it empty and hide the loss.
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -60,16 +69,11 @@ CREATE TABLE IF NOT EXISTS images (
     path            TEXT UNIQUE NOT NULL,
     hash            TEXT NOT NULL,
     caption         TEXT,
-    reporting_marks TEXT,
-    equipment       TEXT,
-    structured_json TEXT,
-    is_railroad     INTEGER,
-    caption_version TEXT,
     embedding       BLOB,
     thumbnail       BLOB,
-    indexed_at      TEXT DEFAULT (datetime('now'))
+    indexed_at      TEXT DEFAULT (datetime('now')){_EXTRA_DDL}
 );
-""" + _FTS_CREATE + _FTS_TRIGGERS
+"""
 
 
 def _enc(arr: np.ndarray) -> bytes:
@@ -96,18 +100,20 @@ class Store:
         self._embedding_cache: tuple[list[int], list[str], "np.ndarray"] | None = None
 
     def _migrate(self) -> None:
-        """Bring a pre-existing DB up to the current schema.
+        """Bring the DB to the current schema, and create/repair the FTS index.
 
-        `CREATE ... IF NOT EXISTS` in SCHEMA is a no-op against an older DB, so adding
-        columns and widening the FTS table to multiple columns must be done explicitly.
-        Safe and idempotent on a freshly created DB (everything already present).
+        Idempotent: a no-op on an already-current DB, the full upgrade on an older one,
+        and self-healing if a prior run crashed mid-migration (FTS is owned here, not by
+        SCHEMA, so an absent captions_fts is recreated AND repopulated, not left empty).
         """
         cols = {row[1] for row in self.conn.execute("PRAGMA table_info(images)")}
         for name, decl in _EXTRA_COLUMNS.items():
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE images ADD COLUMN {name} {decl}")
 
-        # If the FTS table is still the original single-column shape, rebuild it.
+        # Create the FTS table if absent, or widen it if it's still the original
+        # single-column shape. PRAGMA on a missing table returns no rows → empty set →
+        # this branch runs and (re)builds it.
         fts_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(captions_fts)")}
         if "reporting_marks" not in fts_cols:
             self.conn.executescript(
@@ -122,6 +128,12 @@ class Store:
             # Repopulate from the (possibly NULL) image columns; stale rows get
             # re-captioned on the next index pass and the triggers refresh them.
             self.conn.execute("INSERT INTO captions_fts(captions_fts) VALUES('rebuild')")
+
+        self.conn.execute(
+            "INSERT INTO config(key,value) VALUES('schema_version',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
         self.conn.commit()
 
     def get_hash(self, path: str) -> str | None:
@@ -135,6 +147,14 @@ class Store:
             "SELECT caption_version FROM images WHERE path = ?", (path,)
         ).fetchone()
         return row[0] if row else None
+
+    def get_hash_and_version(self, path: str) -> tuple[str | None, str | None]:
+        """Fetch hash + caption_version in one query — the indexer's per-image skip
+        check needs both, and one row fetch beats two on a large already-indexed tree."""
+        row = self.conn.execute(
+            "SELECT hash, caption_version FROM images WHERE path = ?", (path,)
+        ).fetchone()
+        return (row[0], row[1]) if row else (None, None)
 
     def upsert(
         self,

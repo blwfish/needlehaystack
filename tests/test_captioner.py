@@ -144,7 +144,9 @@ def test_caption_thorough_merges_ocr_pass():
 
 def test_caption_marks_without_visible_text_still_in_caption():
     """Equipment carries reporting marks but the model returned no visible_text list.
-    The marks must still surface in the caption (the `elif mark_tokens` branch)."""
+    The marks must still surface in the caption text (via the Equipment phrase) and in
+    the weighted reporting_marks column — without a redundant second 'Reporting marks:'
+    line duplicating them."""
     c = Captioner()
     payload = {
         "is_railroad": True, "description": "a boxcar",
@@ -154,8 +156,11 @@ def test_caption_marks_without_visible_text_still_in_caption():
     }
     with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
         result = c.caption(make_image())
-    assert "Reporting marks:" in result.caption
+    assert "Equipment:" in result.caption
     assert "ATSF" in result.caption and "1234" in result.caption
+    assert "ATSF" in result.reporting_marks and "1234" in result.reporting_marks
+    # No duplicate marks line — marks appear once (in the Equipment phrase).
+    assert result.caption.count("ATSF") == 1
     c.close()
 
 

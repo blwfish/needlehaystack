@@ -5,6 +5,14 @@ from unittest.mock import MagicMock
 
 import needlestack.server as srv
 from needlestack.server import app
+from needlestack.constants import DEFAULT_MODEL, OLLAMA_URL
+
+
+def _reset_server_globals():
+    """Restore module globals so server tests don't leak state into one another."""
+    srv.init(store=None, embedder=None, ui_path=None, db_path=None,
+             ollama_url=OLLAMA_URL, ollama_model=DEFAULT_MODEL, setup_mode=False)
+    srv._index_state = srv._IndexState()
 
 
 @pytest.fixture
@@ -15,11 +23,12 @@ def client_no_store(tmp_path):
     srv._index_state = srv._IndexState()
     srv.init(store=None, embedder=None, ui_path=tmp_path,
              db_path=tmp_path / "test.db",
-             ollama_url="http://localhost:11434",
-             ollama_model="llava:13b",
+             ollama_url=OLLAMA_URL,
+             ollama_model=DEFAULT_MODEL,
              setup_mode=True)
     from fastapi.testclient import TestClient
-    return TestClient(app, raise_server_exceptions=False)
+    yield TestClient(app, raise_server_exceptions=False)
+    _reset_server_globals()
 
 
 @pytest.fixture
@@ -35,12 +44,13 @@ def client_with_store(tmp_path):
     srv._index_state.done = True  # skip setup redirect
     srv.init(store=store, embedder=embedder, ui_path=tmp_path,
              db_path=tmp_path / "index.db",
-             ollama_url="http://localhost:11434",
-             ollama_model="llava:13b",
+             ollama_url=OLLAMA_URL,
+             ollama_model=DEFAULT_MODEL,
              setup_mode=False)
     from fastapi.testclient import TestClient
     yield TestClient(app, raise_server_exceptions=False), store
     store.close()
+    _reset_server_globals()
 
 
 # --- H1: None guards ---

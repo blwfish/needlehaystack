@@ -6,7 +6,7 @@ import numpy as np
 _log = logging.getLogger(__name__)
 
 from . import taxonomy
-from .constants import DEFAULT_MODEL
+from .constants import DEFAULT_MODEL, OLLAMA_URL
 from .embedder import Embedder
 from .store import Store
 
@@ -30,7 +30,7 @@ EXPAND_PROMPT = (
 MIN_SCORE = 0.38
 
 
-def _expand_query(query: str, ollama_url: str = "http://localhost:11434", model: str = DEFAULT_MODEL) -> list[str]:
+def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL) -> list[str]:
     # Deterministic railroad synonyms are always included, so known terms expand even
     # when the LLM is unavailable or flubs; the LLM widens coverage beyond the taxonomy.
     local = taxonomy.synonyms_for(query)
@@ -73,7 +73,7 @@ def search(
     store: Store,
     embedder: Embedder,
     limit: int = 40,
-    ollama_url: str = "http://localhost:11434",
+    ollama_url: str = OLLAMA_URL,
     ollama_model: str = DEFAULT_MODEL,
     preexpanded_terms: list[str] | None = None,
 ) -> list[dict]:
