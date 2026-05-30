@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import subprocess
 import sys
@@ -240,9 +241,14 @@ async def sync_status() -> dict:
     stale = _store.count_stale_captions(caption_version(_ollama_model))
     if not root.exists():
         return {"new": 0, "removed": 0, "stale": stale, "root": root_str, "root_missing": True}
-    new_count = _store.count_unindexed(root)
+    # Both calls do blocking filesystem I/O (rglob + stat); offload to a thread
+    # so the async event loop isn't blocked during directory scans.
+    new_count, removed_count = await asyncio.gather(
+        asyncio.to_thread(_store.count_unindexed, root),
+        asyncio.to_thread(_store.count_missing),
+    )
     return {
-        "new": new_count, "removed": 0, "stale": stale,
+        "new": new_count, "removed": removed_count, "stale": stale,
         "root": root_str, "count": _store.count(),
     }
 

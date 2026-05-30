@@ -268,6 +268,11 @@ class Store:
         )
         self.conn.commit()
 
+    def count_missing(self) -> int:
+        """Count indexed entries whose files no longer exist, without deleting them."""
+        rows = self.conn.execute("SELECT path FROM images").fetchall()
+        return sum(1 for (path,) in rows if not Path(path).exists())
+
     def remove_missing(self) -> int:
         """Delete index entries whose files no longer exist. Returns count removed."""
         paths = self.conn.execute("SELECT id, path FROM images").fetchall()
