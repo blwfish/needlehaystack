@@ -125,7 +125,7 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
           ollama: str, no_browser: bool) -> None:
     """Start the search server and open the browser."""
     from .embedder import Embedder
-    from .server import app, init
+    from .server import app, close as close_server, init
     from .store import Store
 
     db_path = Path(db)
@@ -188,5 +188,4 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
 
     console.print(f"Listening on [cyan]{url}[/cyan]  (Ctrl+C to stop)")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
-    if store:
-        store.close()
+    close_server()

@@ -281,6 +281,7 @@ class Store:
             placeholders = ",".join("?" * len(missing_ids))
             self.conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", missing_ids)
             self.conn.commit()
+            self._embedding_cache = None  # deleted rows may be in the cache
         return len(missing_ids)
 
     def count_unindexed(self, root: Path) -> int:

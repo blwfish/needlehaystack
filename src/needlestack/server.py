@@ -62,6 +62,19 @@ def init(
     _setup_mode = setup_mode
 
 
+def close() -> None:
+    """Release the active store. Called by the CLI after uvicorn exits.
+
+    Handles both the normal path (store opened by the CLI, passed via init)
+    and the setup-wizard path (store created in the background thread and
+    assigned to _store after indexing completes).
+    """
+    global _store
+    if _store is not None:
+        _store.close()
+        _store = None
+
+
 class SearchRequest(BaseModel):
     query: str
     limit: int = 40
