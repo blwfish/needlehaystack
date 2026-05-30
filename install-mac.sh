@@ -1,8 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-LLAVA_MODEL="qwen2.5vl:7b"   # strong in-image text/OCR for reporting marks
-MIN_DISK_GB=12        # ~6GB model + ~3GB pixi env + 3GB buffer
+# Model tiers — do not hardcode here; choose_model() sets LLAVA_MODEL below.
+#   fast     minicpm-v:latest   low-RAM / CPU-only machines  ~2-4s/photo
+#   balanced qwen2.5vl:7b       16 GB+ unified / mid GPU    ~4-6s/photo  (default)
+#   quality  qwen3-vl:32b       32 GB+ unified / high-VRAM  ~90-120s/photo
+MODEL_FAST="minicpm-v:latest"
+MODEL_BALANCED="qwen2.5vl:7b"
+MODEL_QUALITY="qwen3-vl:32b"
+
+# Disk requirements per tier (model + pixi env + index buffer)
+MIN_DISK_FAST=8
+MIN_DISK_BALANCED=12
+MIN_DISK_QUALITY=32
 OLLAMA_TIMEOUT=30     # seconds to wait for Ollama to start
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$HOME/.needlestack"
@@ -49,11 +59,70 @@ fi
 green "macOS $MACOS_VERSION"
 
 ARCH=$(uname -m)
+RAM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+RAM_GB=$(( RAM_BYTES / 1024 / 1024 / 1024 ))
+
+# --- choose vision model based on hardware ---
+
+step "Choosing vision model"
+
 if [[ "$ARCH" == "arm64" ]]; then
-    green "Apple Silicon (fast)"
+    # Apple Silicon: unified memory is shared CPU + GPU.
+    # The whole pool is available to Ollama for model weights.
+    HW_DESC="Apple Silicon, ${RAM_GB} GB unified memory"
+    if [[ "$RAM_GB" -ge 32 ]]; then
+        LLAVA_MODEL="$MODEL_QUALITY"
+        MODEL_TIER="quality"
+        MODEL_REASON="32 GB+ unified memory comfortably fits the 32B quality model (~20 GB)."
+        MODEL_SPEED="~90-120 seconds per photo"
+        MIN_DISK_GB="$MIN_DISK_QUALITY"
+    elif [[ "$RAM_GB" -ge 16 ]]; then
+        LLAVA_MODEL="$MODEL_BALANCED"
+        MODEL_TIER="balanced"
+        MODEL_REASON="16 GB unified memory is a comfortable fit for the 7B model (~5 GB)."
+        MODEL_SPEED="~4-6 seconds per photo"
+        MIN_DISK_GB="$MIN_DISK_BALANCED"
+    else
+        LLAVA_MODEL="$MODEL_FAST"
+        MODEL_TIER="fast"
+        MODEL_REASON="8 GB unified memory is tight for the 7B model alongside the OS. Using the fast model leaves breathing room."
+        MODEL_SPEED="~2-4 seconds per photo"
+        MIN_DISK_GB="$MIN_DISK_FAST"
+    fi
 else
-    warn "Intel Mac detected — indexing will be slower, but everything will work."
+    # Intel Mac: Ollama runs on CPU (no Metal acceleration).
+    HW_DESC="Intel Mac, ${RAM_GB} GB RAM (CPU inference)"
+    LLAVA_MODEL="$MODEL_FAST"
+    MODEL_TIER="fast"
+    MODEL_REASON="Intel Macs run Ollama on CPU — smaller model means much faster indexing."
+    MODEL_SPEED="~15-30 seconds per photo (CPU)"
+    MIN_DISK_GB="$MIN_DISK_FAST"
 fi
+
+# Print the explanation box
+printf "\n"
+printf "  ┌─────────────────────────────────────────────────────────────┐\n"
+printf "  │  Hardware detected:  %-40s│\n" "$HW_DESC"
+printf "  │                                                             │\n"
+printf "  │  Selected model:     %-40s│\n" "$LLAVA_MODEL  ($MODEL_TIER)"
+printf "  │  Speed estimate:     %-40s│\n" "$MODEL_SPEED"
+printf "  │                                                             │\n"
+# wrap reason at ~56 chars
+printf "  │  Why: %-54s│\n" "$MODEL_REASON"
+printf "  │                                                             │\n"
+printf "  │  Other options you can switch to any time:                  │\n"
+printf "  │    fast     %-47s│\n" "$MODEL_FAST"
+printf "  │    balanced %-47s│\n" "$MODEL_BALANCED"
+printf "  │    quality  %-47s│\n" "$MODEL_QUALITY"
+printf "  │                                                             │\n"
+printf "  │  To use a different model after install:                    │\n"
+printf "  │    needlestack index /your/photos --preset quality          │\n"
+printf "  │    needlestack index /your/photos --model your-model-name   │\n"
+printf "  │  Re-indexing picks up the new model automatically.          │\n"
+printf "  └─────────────────────────────────────────────────────────────┘\n"
+printf "\n"
+
+green "Model: $LLAVA_MODEL ($MODEL_TIER tier)"
 
 # --- internet ---
 
@@ -119,7 +188,13 @@ if ollama list 2>/dev/null | grep -q "^${MODEL_BASE}"; then
     green "Model $LLAVA_MODEL already downloaded ($MODEL_SIZE)"
 else
     echo ""
-    echo "  Downloading $LLAVA_MODEL — this is about 8 GB and will take a while."
+    case "$MODEL_TIER" in
+        fast)     MODEL_DL_SIZE="~2 GB" ;;
+        balanced) MODEL_DL_SIZE="~5 GB" ;;
+        quality)  MODEL_DL_SIZE="~20 GB" ;;
+        *)        MODEL_DL_SIZE="several GB" ;;
+    esac
+    echo "  Downloading $LLAVA_MODEL ($MODEL_TIER tier) — $MODEL_DL_SIZE, this will take a while."
     echo "  You can leave this running and come back."
     echo ""
     if ! ollama pull "$LLAVA_MODEL"; then

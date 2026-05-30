@@ -8,7 +8,7 @@ import click
 import uvicorn
 from rich.console import Console
 
-from .constants import DEFAULT_MODEL, OLLAMA_URL as DEFAULT_OLLAMA
+from .constants import DEFAULT_MODEL, OLLAMA_URL as DEFAULT_OLLAMA, MODEL_PRESETS
 
 DEFAULT_DB = Path.home() / ".needlestack" / "index.db"
 DEFAULT_PORT = 8484
@@ -26,18 +26,26 @@ def main() -> None:
 @main.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--db", default=str(DEFAULT_DB), show_default=True, help="Index database path")
-@click.option("--model", default=DEFAULT_MODEL, show_default=True, help="Ollama vision model")
+@click.option("--model", default=None, help="Ollama vision model (overrides --preset)")
+@click.option("--preset", default=None,
+              type=click.Choice(list(MODEL_PRESETS), case_sensitive=False),
+              help="Model tier: fast / balanced (default) / quality")
 @click.option("--ollama", default=DEFAULT_OLLAMA, show_default=True, help="Ollama base URL")
 @click.option("--force", is_flag=True, help="Re-index already-indexed files")
 @click.option("--thorough", is_flag=True, help="Add a dedicated OCR pass for reporting marks (~2x slower)")
-def index(directory: Path, db: str, model: str, ollama: str, force: bool, thorough: bool) -> None:
+def index(directory: Path, db: str, model: str | None, preset: str | None,
+          ollama: str, force: bool, thorough: bool) -> None:
     """Index a directory of images."""
     from .captioner import Captioner
     from .embedder import Embedder
     from .indexer import index_directory
     from .store import Store
 
-    captioner = Captioner(model=model, base_url=ollama)
+    if model and preset:
+        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
+        sys.exit(1)
+    resolved_model = model or MODEL_PRESETS.get(preset or "", DEFAULT_MODEL)
+    captioner = Captioner(model=resolved_model, base_url=ollama)
     ok, msg = captioner.check()
     if not ok:
         console.print(f"[red]Error:[/red] {msg}")
@@ -48,7 +56,7 @@ def index(directory: Path, db: str, model: str, ollama: str, force: bool, thorou
     embedder = Embedder()
 
     console.print(f"[green]Indexing[/green] {directory}")
-    console.print(f"  model: [cyan]{model}[/cyan]  db: [cyan]{db_path}[/cyan]")
+    console.print(f"  model: [cyan]{resolved_model}[/cyan]  db: [cyan]{db_path}[/cyan]")
     if store.count() > 0 and not force:
         console.print(f"  resuming — [dim]{store.count()} already indexed[/dim]")
 
@@ -96,10 +104,14 @@ def doctor(query: str | None, db: str, model: str, ollama: str, output: str | No
 @main.command()
 @click.option("--db", default=str(DEFAULT_DB), show_default=True, help="Index database path")
 @click.option("--port", default=DEFAULT_PORT, show_default=True, help="Server port")
-@click.option("--model", default=DEFAULT_MODEL, show_default=True, help="Ollama model for query expansion")
+@click.option("--model", default=None, help="Ollama model for query expansion (overrides --preset)")
+@click.option("--preset", default=None,
+              type=click.Choice(list(MODEL_PRESETS), case_sensitive=False),
+              help="Model tier: fast / balanced (default) / quality")
 @click.option("--ollama", default=DEFAULT_OLLAMA, show_default=True, help="Ollama base URL")
 @click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
-def serve(db: str, port: int, model: str, ollama: str, no_browser: bool) -> None:
+def serve(db: str, port: int, model: str | None, preset: str | None,
+          ollama: str, no_browser: bool) -> None:
     """Start the search server and open the browser."""
     from .embedder import Embedder
     from .server import app, init
@@ -124,8 +136,9 @@ def serve(db: str, port: int, model: str, ollama: str, no_browser: bool) -> None
         console.print(f"[green]needlestack[/green]  {n} photos indexed")
         embedder = Embedder()
 
+    resolved_model = model or MODEL_PRESETS.get(preset or "", DEFAULT_MODEL)
     init(store, embedder, UI_PATH, db_path=db_path,
-         ollama_url=ollama, ollama_model=model, setup_mode=setup_mode)
+         ollama_url=ollama, ollama_model=resolved_model, setup_mode=setup_mode)
 
     # If port is in use, check if it's already us — if so, just open the browser
     import socket

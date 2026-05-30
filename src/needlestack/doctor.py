@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from .constants import DEFAULT_MODEL, OLLAMA_URL
+from .constants import DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, MODEL_PRESETS
 from .search import MIN_SCORE, _expand_query, _fts_query
 
 
@@ -64,7 +64,14 @@ def run(
             m == ollama_model or m.startswith(ollama_model.split(":")[0] + ":")
             for m in models
         )
-        _row(out, f"Model {ollama_model}", "present" if model_present else "NOT FOUND")
+        tier = MODEL_TIERS.get(ollama_model, "custom")
+        tier_str = f"{tier} tier" if tier != "custom" else "custom (not a named preset)"
+        _row(out, f"Model {ollama_model}", ("present" if model_present else "NOT FOUND") + f"  [{tier_str}]")
+        if tier == "quality":
+            _row(out, "  Quality-tier note", "~90-120s/photo — expect a slow index on large collections")
+        if tier == "custom" or not model_present:
+            presets_str = "  |  ".join(f"--preset {k}  ({v})" for k, v in MODEL_PRESETS.items())
+            _row(out, "  Available presets", presets_str)
     except Exception as e:
         _row(out, "Status", f"NOT REACHABLE — {e}")
 

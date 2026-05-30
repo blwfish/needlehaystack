@@ -2,8 +2,19 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$LLAVA_MODEL     = "qwen2.5vl:7b"   # strong in-image text/OCR for reporting marks
-$MIN_DISK_GB     = 12
+# Model tiers — Choose-Model sets $LLAVA_MODEL based on detected hardware.
+#   fast     minicpm-v:latest   low-VRAM / CPU-only    ~2-4s/photo
+#   balanced qwen2.5vl:7b       6-8 GB VRAM / mid GPU  ~4-6s/photo  (default)
+#   quality  qwen3-vl:32b       20+ GB VRAM            ~90-120s/photo
+$MODEL_FAST     = "minicpm-v:latest"
+$MODEL_BALANCED = "qwen2.5vl:7b"
+$MODEL_QUALITY  = "qwen3-vl:32b"
+
+$MIN_DISK_FAST     = 8
+$MIN_DISK_BALANCED = 12
+$MIN_DISK_QUALITY  = 32
+
+$OLLAMA_TIMEOUT  = 60   # seconds to wait for Ollama service
 $OLLAMA_TIMEOUT  = 60   # seconds to wait for Ollama service
 $SCRIPT_DIR      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LOG_DIR         = Join-Path $env:USERPROFILE ".needlestack"
@@ -65,6 +76,82 @@ if ([int]$buildNumber -lt 19041) {
 
 $arch = $env:PROCESSOR_ARCHITECTURE
 Ok "Architecture: $arch"
+
+# --- choose vision model based on hardware ---
+
+Step "Choosing vision model"
+
+# Detect GPU: prefer nvidia-smi for accurate VRAM; fall back to WMI (often capped at 4 GB).
+$vramGB  = 0
+$gpuName = "none detected"
+$nvidiaSmi = Join-Path $env:SystemRoot "System32\nvidia-smi.exe"
+if (Test-Path $nvidiaSmi) {
+    try {
+        $vramMB = & $nvidiaSmi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null |
+                  Select-Object -First 1
+        $vramGB = [math]::Round([int]$vramMB / 1024)
+        $gpuName = (& $nvidiaSmi --query-gpu=name --format=csv,noheader 2>$null |
+                    Select-Object -First 1).Trim()
+    } catch {}
+}
+if ($vramGB -eq 0) {
+    # WMI fallback — AdapterRAM is unreliable above 4 GB but usable for low-end detection
+    try {
+        $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -match "NVIDIA|GeForce|RTX|GTX|Quadro|Radeon|AMD" } |
+               Select-Object -First 1
+        if ($gpu) {
+            $vramGB = [math]::Round($gpu.AdapterRAM / 1GB)
+            $gpuName = $gpu.Name
+        }
+    } catch {}
+}
+
+$systemRamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+
+if ($vramGB -ge 20) {
+    $LLAVA_MODEL   = $MODEL_QUALITY
+    $MODEL_TIER    = "quality"
+    $MODEL_REASON  = "${gpuName} with ${vramGB} GB VRAM comfortably fits the 32B model (~20 GB)."
+    $MODEL_SPEED   = "~90-120 seconds per photo"
+    $MIN_DISK_GB   = $MIN_DISK_QUALITY
+} elseif ($vramGB -ge 6) {
+    $LLAVA_MODEL   = $MODEL_BALANCED
+    $MODEL_TIER    = "balanced"
+    $MODEL_REASON  = "${gpuName} with ${vramGB} GB VRAM is a good fit for the 7B model (~5 GB)."
+    $MODEL_SPEED   = "~4-6 seconds per photo"
+    $MIN_DISK_GB   = $MIN_DISK_BALANCED
+} else {
+    $LLAVA_MODEL   = $MODEL_FAST
+    $MODEL_TIER    = "fast"
+    if ($vramGB -gt 0) {
+        $MODEL_REASON = "${gpuName} has ${vramGB} GB VRAM — using the fast model to stay within limits."
+    } else {
+        $MODEL_REASON = "No GPU detected or VRAM too low — using the fast model for CPU inference."
+    }
+    $MODEL_SPEED   = "~15-30 seconds per photo (CPU) or ~3-5s with a capable GPU"
+    $MIN_DISK_GB   = $MIN_DISK_FAST
+}
+
+Write-Host ""
+Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor Cyan
+Write-Host ("  │  Hardware: GPU={0,-20} VRAM={1,2} GB  RAM={2,3} GB      │" -f ($gpuName.Substring(0, [math]::Min(20,$gpuName.Length))), $vramGB, $systemRamGB) -ForegroundColor Cyan
+Write-Host "  │                                                             │" -ForegroundColor Cyan
+Write-Host ("  │  Selected model:  {0,-44}│" -f "$LLAVA_MODEL  ($MODEL_TIER)") -ForegroundColor Cyan
+Write-Host ("  │  Speed estimate:  {0,-44}│" -f $MODEL_SPEED) -ForegroundColor Cyan
+Write-Host "  │                                                             │" -ForegroundColor Cyan
+Write-Host ("  │  Why: {0,-55}│" -f $MODEL_REASON) -ForegroundColor Cyan
+Write-Host "  │                                                             │" -ForegroundColor Cyan
+Write-Host "  │  Other options (switch any time after install):             │" -ForegroundColor Cyan
+Write-Host ("  │    fast     {0,-49}│" -f $MODEL_FAST) -ForegroundColor Cyan
+Write-Host ("  │    balanced {0,-49}│" -f $MODEL_BALANCED) -ForegroundColor Cyan
+Write-Host ("  │    quality  {0,-49}│" -f $MODEL_QUALITY) -ForegroundColor Cyan
+Write-Host "  │                                                             │" -ForegroundColor Cyan
+Write-Host "  │  To switch:  needlestack index /photos --preset quality     │" -ForegroundColor Cyan
+Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
+Write-Host ""
+
+Ok "Model: $LLAVA_MODEL ($MODEL_TIER tier)"
 
 # --- internet ---
 
@@ -164,7 +251,8 @@ if ($modelPresent) {
     Ok "Model $LLAVA_MODEL already downloaded"
 } else {
     Write-Host ""
-    Write-Host "  Downloading $LLAVA_MODEL — about 8 GB, this will take a while."
+    $dlSize = switch ($MODEL_TIER) { "fast" {"~2 GB"} "balanced" {"~5 GB"} "quality" {"~20 GB"} default {"several GB"} }
+    Write-Host "  Downloading $LLAVA_MODEL ($MODEL_TIER tier) — $dlSize, this will take a while."
     Write-Host "  You can leave this running and come back."
     Write-Host ""
     try {
