@@ -99,7 +99,7 @@ src/needlestack/
 
 Search scoring: `score = 0.6 × FTS5_rank + 0.4 × CLIP_cosine`, results below 0.38 are dropped.
 
-**Tests:** 200+ unit tests cover captioning, indexing, search scoring, query expansion, the API, and every domain. Run the suite with:
+**Tests:** 200+ unit tests (not lines — tests) cover captioning, indexing, search scoring, query expansion, the API, and every domain. Run the suite with:
 
 ```bash
 pytest -m "not integration"
