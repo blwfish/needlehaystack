@@ -127,6 +127,91 @@ def test_open_returns_404_for_missing_id(client_with_store):
 
 # --- sync-status (new/stale caption reporting) ---
 
+# --- _all_domains / _resolve_domains ---
+
+def test_all_domains_returns_distinct_in_order(tmp_path):
+    from needlestack.store import Store
+    store = Store(tmp_path / "test.db")
+    store.add_root("/photos/rr", "railroad")
+    store.add_root("/photos/birds", "birds")
+    srv._store = store
+    try:
+        result = srv._all_domains()
+        assert [d.name for d in result] == ["railroad", "birds"]
+    finally:
+        store.close()
+        srv._store = None
+
+
+def test_all_domains_deduplicates_same_domain(tmp_path):
+    from needlestack.store import Store
+    store = Store(tmp_path / "test.db")
+    store.add_root("/photos/a", "railroad")
+    store.add_root("/photos/b", "railroad")
+    srv._store = store
+    try:
+        result = srv._all_domains()
+        assert len(result) == 1
+        assert result[0].name == "railroad"
+    finally:
+        store.close()
+        srv._store = None
+
+
+def test_resolve_domains_false_returns_primary(tmp_path):
+    from needlestack.store import Store
+    store = Store(tmp_path / "test.db")
+    store.add_root("/photos", "birds")
+    srv._store = store
+    try:
+        req = srv.SearchRequest(query="test", all_domains=False)
+        result = srv._resolve_domains(req)
+        assert len(result) == 1
+        assert result[0].name == "birds"
+    finally:
+        store.close()
+        srv._store = None
+
+
+def test_resolve_domains_true_returns_all(tmp_path):
+    from needlestack.store import Store
+    store = Store(tmp_path / "test.db")
+    store.add_root("/photos/rr", "railroad")
+    store.add_root("/photos/birds", "birds")
+    srv._store = store
+    try:
+        req = srv.SearchRequest(query="test", all_domains=True)
+        result = srv._resolve_domains(req)
+        assert {d.name for d in result} == {"railroad", "birds"}
+    finally:
+        store.close()
+        srv._store = None
+
+
+def test_expand_endpoint_returns_terms(client_with_store):
+    from unittest.mock import patch
+    client, store = client_with_store
+    store.add_root("/photos", "railroad")
+    with patch("needlestack.search._expand_query", return_value=["caboose", "waycar"]):
+        resp = client.post("/expand", json={"query": "caboose"})
+    assert resp.status_code == 200
+    assert resp.json()["terms"] == ["caboose", "waycar"]
+
+
+def test_expand_endpoint_all_domains_passes_all_domain_objects(client_with_store):
+    from unittest.mock import patch
+    client, store = client_with_store
+    store.add_root("/photos/rr", "railroad")
+    store.add_root("/photos/birds", "birds")
+    with patch("needlestack.search._expand_query", return_value=["hawk"]) as mock_expand:
+        resp = client.post("/expand", json={"query": "hawk", "all_domains": True})
+    assert resp.status_code == 200
+    domains_arg = mock_expand.call_args.kwargs.get("domains", [])
+    assert {d.name for d in domains_arg} == {"railroad", "birds"}
+
+
+# --- sync-status ---
+
 def test_sync_status_none_store(client_no_store):
     resp = client_no_store.get("/api/sync-status")
     assert resp.status_code == 200

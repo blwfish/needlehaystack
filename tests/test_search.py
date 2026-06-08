@@ -2,8 +2,22 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from needlestack.search import _fts_query, _expand_query, search, MIN_SCORE
+from needlestack.search import _fts_query, _expand_query, search, MIN_SCORE, _make_expand_prompt
+from needlestack import taxonomy
 from needlestack.store import Store
+
+
+# --- _make_expand_prompt ---
+
+def test_make_expand_prompt_single_domain_includes_vocab():
+    prompt = _make_expand_prompt([taxonomy.RAILROAD])
+    assert taxonomy.RAILROAD.subject_types_prompt() in prompt
+
+
+def test_make_expand_prompt_multi_domain_includes_vocab_for_all():
+    prompt = _make_expand_prompt([taxonomy.RAILROAD, taxonomy.BIRDS])
+    assert taxonomy.RAILROAD.subject_types_prompt() in prompt
+    assert taxonomy.BIRDS.subject_types_prompt() in prompt
 
 
 # --- _fts_query ---
@@ -198,6 +212,17 @@ def test_single_doc_returns_and_scores_correctly(tmp_path):
     # Single doc: CLIP tie-break → 1.0, FTS tie-break → 1.0. Combined = 0.4*1 + 0.6*1 = 1.0
     assert results[0]["score"] == 1.0
     s.close()
+
+
+# --- _expand_query logging ---
+
+def test_expand_query_multi_domain_unions_synonyms():
+    """BIRDS synonyms for 'raptor' appear when BIRDS domain is included."""
+    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+        railroad_only = _expand_query("raptor", domains=[taxonomy.RAILROAD])
+        both_domains  = _expand_query("raptor", domains=[taxonomy.RAILROAD, taxonomy.BIRDS])
+    assert "hawk" not in railroad_only   # RAILROAD has no raptor synonyms
+    assert "hawk" in both_domains        # union includes BIRDS synonyms
 
 
 # --- _expand_query logging ---
