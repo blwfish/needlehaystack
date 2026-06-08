@@ -99,6 +99,20 @@ src/needlestack/
 
 Search scoring: `score = 0.6 × FTS5_rank + 0.4 × CLIP_cosine`, results below 0.38 are dropped.
 
+```
+tests/
+  conftest.py               Shared fixtures — Ollama skip guard, Wikipedia photo downloads
+  test_captioner.py         Captioner prompt construction and structured output parsing
+  test_cli.py               CLI commands via click.testing.CliRunner (mocked dependencies)
+  test_doctor.py            Doctor report generation and query tracing
+  test_indexer.py           File discovery, hashing, thumbnail generation
+  test_search.py            Query expansion, FTS5 scoring, score fusion, edge cases
+  test_server.py            FastAPI endpoints, sync-status, domain resolution
+  test_store.py             SQLite schema, FTS5 triggers, embedding storage, config
+  test_taxonomy.py          Domain vocabulary, synonyms, field weights for all domains
+  test_birds_integration.py Real Ollama + Wikipedia photos (skipped without Ollama)
+```
+
 **Tests:** 200+ unit tests (not lines — tests) cover captioning, indexing, search scoring, query expansion, the API, and every domain. Run the suite with:
 
 ```bash
