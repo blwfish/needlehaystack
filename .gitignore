@@ -1,3 +1,4 @@
+tests/fixtures/
 .pixi/
 .DS_Store
 __pycache__/

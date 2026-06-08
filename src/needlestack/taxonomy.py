@@ -403,6 +403,111 @@ AVIATION = Domain(
 
 
 # ---------------------------------------------------------------------------
+# Birds domain (bird photography)
+# ---------------------------------------------------------------------------
+
+_BIRD_SUBJECT_TYPES: dict[str, list[str]] = {
+    "raptor": [
+        "hawk", "eagle", "falcon", "osprey", "kite", "harrier",
+        "accipiter", "buteo", "buzzard", "vulture", "condor",
+    ],
+    "owl": [
+        "screech owl", "great horned owl", "barn owl", "barred owl",
+        "snowy owl", "burrowing owl", "short-eared owl", "long-eared owl",
+    ],
+    "waterfowl": [
+        "duck", "goose", "swan", "teal", "pintail", "mallard",
+        "merganser", "bufflehead", "goldeneye", "scoter", "eider",
+        "shoveler", "wigeon", "canvasback", "redhead", "scaup",
+    ],
+    "shorebird": [
+        "sandpiper", "plover", "godwit", "curlew", "dowitcher", "dunlin",
+        "knot", "turnstone", "yellowlegs", "wader", "snipe", "phalarope",
+        "oystercatcher", "avocet", "stilt",
+    ],
+    "wading bird": [
+        "heron", "egret", "crane", "spoonbill", "ibis", "stork", "bittern",
+    ],
+    "songbird": [
+        "passerine", "warbler", "sparrow", "finch", "thrush", "flycatcher",
+        "vireo", "wren", "nuthatch", "chickadee", "titmouse", "tanager",
+        "bunting", "oriole", "grosbeak", "bluebird", "robin", "catbird",
+        "mockingbird", "starling", "blackbird", "meadowlark",
+    ],
+    "hummingbird": ["hummer"],
+    "woodpecker": ["flicker", "sapsucker", "pileated woodpecker"],
+    "seabird": [
+        "gull", "tern", "pelican", "cormorant", "gannet", "albatross",
+        "petrel", "shearwater", "booby", "frigatebird", "murre", "puffin",
+        "auklet", "skua", "jaeger", "loon",
+    ],
+    "gamebird": [
+        "grouse", "pheasant", "quail", "turkey", "ptarmigan",
+        "prairie chicken", "partridge", "bobwhite",
+    ],
+    "corvid": ["crow", "raven", "jay", "magpie"],
+    "dove": ["pigeon", "mourning dove", "collared dove", "rock pigeon", "band-tailed pigeon"],
+    "kingfisher": [],
+    "swallow": ["swift", "martin", "barn swallow", "cliff swallow", "tree swallow"],
+    "rail": ["coot", "gallinule", "moorhen", "crake", "sora"],
+}
+
+_BIRD_SETTINGS: list[str] = [
+    "wetland", "marsh", "pond", "lake", "river", "stream",
+    "ocean", "pelagic", "coastal", "beach", "estuary", "mudflat", "tidal flat",
+    "forest", "forest edge", "woodland",
+    "grassland", "prairie", "scrub", "desert", "tundra", "alpine",
+    "urban", "suburban", "backyard", "feeder",
+    "agricultural field", "rocky coast", "cliffside",
+]
+
+BIRDS = Domain(
+    name="birds",
+    subject_types=_BIRD_SUBJECT_TYPES,
+    identifier_label="species",
+    settings=_BIRD_SETTINGS,
+    subject_field="is_birds",
+    items_field="birds",
+    item_fields=[
+        ("type", "mid"),           # bird group: raptor, waterfowl, songbird, etc.
+        ("common_name", "high"),   # Red-tailed Hawk, Great Blue Heron
+        ("species", "high"),       # Buteo jamaicensis — scientific name, optional
+        ("behavior", "mid"),       # perched, in flight, foraging, displaying, preening
+        ("plumage", "mid"),        # adult, juvenile, breeding, non-breeding, eclipse
+        ("details", "phrase"),
+    ],
+    prompt_fragments={
+        "preamble": "This is a bird photograph (or might be).",
+        "subject_qualifier": "true only if the photo actually shows a bird or birds",
+        "item_singular": "bird",
+        "id_instruction": (
+            "Identify each bird by common_name (e.g. Red-tailed Hawk, Great Blue Heron, "
+            "Yellow Warbler) from its visual characteristics — plumage, size, shape, bill, "
+            "and markings. Include species (scientific name, e.g. Buteo jamaicensis) if you "
+            "are confident. If uncertain, give the most specific identification you can "
+            "confidently make (e.g. 'Accipiter sp.' or 'Empidonax flycatcher'). "
+            "Note any visible leg bands or color rings in details."
+        ),
+        "era_examples": "recent digital, 1990s film, 1980s, historic",
+        "view_instruction": (
+            "perched, in flight, landing, taking off, soaring, hovering, swimming, "
+            "wading, diving, foraging, displaying, singing/calling, preening, at nest, "
+            "with prey, flock"
+        ),
+        "type_note": "",
+        "fallback_preamble": (
+            "This is a bird photograph. Describe it for a searchable photo index "
+            "using precise bird identification — common name, scientific name if known, "
+            "plumage/age, behavior, and habitat. If the species is uncertain, give the "
+            "most specific identification you can confidently make. "
+            "If this is not a bird photo, describe what it actually shows with equal "
+            "specificity. Write in plain sentences, no preamble."
+        ),
+    },
+)
+
+
+# ---------------------------------------------------------------------------
 # Domain registry
 # ---------------------------------------------------------------------------
 
@@ -411,6 +516,7 @@ DOMAINS: dict[str, Domain] = {
     "naval": NAVAL,
     "armor": ARMOR,
     "aviation": AVIATION,
+    "birds": BIRDS,
 }
 
 

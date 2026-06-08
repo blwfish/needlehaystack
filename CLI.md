@@ -11,7 +11,7 @@ needlestack doctor              Diagnostic report — use --out report.txt to sa
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `~/.needlestack/index.db` | Database file location |
-| `--domain` | `railroad` | Collection type: `railroad` / `naval` / `armor` / `aviation` |
+| `--domain` | `railroad` | Collection type: `railroad` / `naval` / `armor` / `aviation` / `birds` |
 | `--preset` | *(auto-chosen by installer)* | AI model tier: `fast` / `balanced` / `quality` |
 | `--model` | — | Specific Ollama model name (overrides `--preset`) |
 | `--ollama` | `http://localhost:11434` | Ollama address (if not running locally) |

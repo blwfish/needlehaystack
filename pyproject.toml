@@ -40,3 +40,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: requires Ollama running locally and network access (deselect with -m 'not integration')",
+]

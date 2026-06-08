@@ -1,6 +1,6 @@
 import pytest
 from needlestack import taxonomy
-from needlestack.taxonomy import RAILROAD, NAVAL, ARMOR, AVIATION, get_domain, DOMAINS
+from needlestack.taxonomy import RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, get_domain, DOMAINS
 
 
 # --- backward-compatible module-level helpers (RAILROAD wrappers) ---
@@ -155,6 +155,7 @@ def test_domains_registry_contains_known_domains():
     assert "naval" in DOMAINS
     assert "armor" in DOMAINS
     assert "aviation" in DOMAINS
+    assert "birds" in DOMAINS
 
 
 def test_all_domain_subject_fields_are_unique():
@@ -187,3 +188,57 @@ def test_aviation_synonyms_for_known_term():
 def test_aviation_synonyms_for_abbreviation():
     syn = AVIATION.synonyms_for("UAV")
     assert "drone" in syn
+
+
+# --- birds domain ---
+
+def test_get_domain_birds():
+    assert get_domain("birds") is BIRDS
+
+
+def test_birds_domain_fields():
+    assert BIRDS.name == "birds"
+    assert BIRDS.subject_field == "is_birds"
+    assert BIRDS.items_field == "birds"
+    assert BIRDS.identifier_label == "species"
+    assert "raptor" in BIRDS.valid_subject_types
+    assert "waterfowl" in BIRDS.valid_subject_types
+    assert "songbird" in BIRDS.valid_subject_types
+
+
+def test_birds_domain_high_weight_fields():
+    """common_name and species must be high-weight so species searches rank well."""
+    weights = {f: w for f, w in BIRDS.item_fields}
+    assert weights["common_name"] == "high"
+    assert weights["species"] == "high"
+    assert weights["behavior"] == "mid"
+    assert weights["plumage"] == "mid"
+
+
+def test_birds_synonyms_for_canonical_raptor():
+    """Looking up the canonical type returns its synonyms."""
+    syn = BIRDS.synonyms_for("raptor")
+    assert "hawk" in syn
+    assert "eagle" in syn
+    assert "falcon" in syn
+    assert "osprey" in syn
+    assert "raptor" not in syn
+
+
+def test_birds_synonyms_for_via_synonym():
+    """Looking up a synonym returns the canonical name and sibling synonyms."""
+    syn = BIRDS.synonyms_for("hawk")
+    assert "raptor" in syn
+    assert "eagle" in syn
+    assert "hawk" not in syn
+
+
+def test_birds_synonyms_for_heron():
+    syn = BIRDS.synonyms_for("heron")
+    assert "wading bird" in syn
+    assert "egret" in syn
+    assert "crane" in syn
+
+
+def test_birds_synonyms_for_unknown():
+    assert BIRDS.synonyms_for("locomotive") == []

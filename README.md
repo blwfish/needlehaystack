@@ -9,7 +9,7 @@ Find photos by describing what's in them — fully local, no cloud, no account.
 
 needlestack indexes a folder of images using a local AI model that writes a rich description of each photo, then searches those descriptions by both keywords and visual similarity. Everything runs on your machine.
 
-Works with **railroad**, **naval**, **armor (AFV)**, and **aviation** photo collections — each domain brings its own vocabulary, identifier fields, and synonym expansion.
+Works with **railroad**, **naval**, **armor (AFV)**, **aviation**, and **bird photography** collections — each domain brings its own vocabulary, identifier fields, and synonym expansion.
 
 **Your photos never leave your computer.** All AI processing happens locally via [Ollama](https://ollama.com) — no account, no upload, no cloud. The AI reads your photos and generates captions; that's it. Nothing goes anywhere.
 
