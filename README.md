@@ -98,3 +98,17 @@ src/needlestack/
 ```
 
 Search scoring: `score = 0.6 × FTS5_rank + 0.4 × CLIP_cosine`, results below 0.38 are dropped.
+
+**Tests:** 200+ unit tests cover captioning, indexing, search scoring, query expansion, the API, and every domain. Run the suite with:
+
+```bash
+pytest -m "not integration"
+```
+
+Integration tests (which caption real photos via Ollama) run with `pytest` alone — Ollama must be running.
+
+**Contributing:** PRs are welcome for bug fixes and new domains. A few guidelines:
+
+- *New domains* belong in `taxonomy.py` — follow the pattern of an existing domain, add it to `DOMAINS`, and add the option to `setup.html`.
+- *Search weights or scoring changes* should open an issue for discussion first — these affect everyone's results.
+- *All PRs must include tests.* The existing suite is the baseline; new behaviour without tests will not be merged.
