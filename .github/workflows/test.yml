@@ -35,3 +35,16 @@ jobs:
 
       - name: Run unit tests
         run: pytest -m "not integration"
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel
+
+      - name: Install wheel into fresh environment and smoke-test
+        run: |
+          python -m venv dist-venv
+          dist-venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cpu
+          dist-venv\Scripts\pip install (Get-Item dist\*.whl).FullName
+          dist-venv\Scripts\needlestack --version
+        shell: pwsh
