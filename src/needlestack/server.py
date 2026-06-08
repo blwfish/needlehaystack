@@ -1,10 +1,13 @@
 import asyncio
 import base64
+import logging
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
@@ -79,6 +82,7 @@ class SearchRequest(BaseModel):
     query: str
     limit: int = 40
     terms: list[str] | None = None  # pre-expanded terms, skips expansion if provided
+    all_domains: bool = False        # expand synonyms across all indexed domains
 
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -392,11 +396,33 @@ def _primary_domain() -> taxonomy.Domain:
     return taxonomy.DOMAINS.get(name, taxonomy.RAILROAD)
 
 
+def _all_domains() -> list[taxonomy.Domain]:
+    """All distinct domains across indexed roots, preserving first-seen order."""
+    if _store is None:
+        return [taxonomy.RAILROAD]
+    roots = _store.get_roots()
+    seen: set[str] = set()
+    result: list[taxonomy.Domain] = []
+    for r in roots:
+        name = r["domain"]
+        if name not in seen:
+            seen.add(name)
+            if name not in taxonomy.DOMAINS:
+                _log.warning("Unknown domain %r in index — falling back to railroad", name)
+            result.append(taxonomy.DOMAINS.get(name, taxonomy.RAILROAD))
+    return result or [taxonomy.RAILROAD]
+
+
+def _resolve_domains(req: SearchRequest) -> list[taxonomy.Domain]:
+    return _all_domains() if req.all_domains else [_primary_domain()]
+
+
 @app.post("/expand")
 async def expand(req: SearchRequest) -> dict:
     from .search import _expand_query
+    domains = _resolve_domains(req)
     terms = _expand_query(req.query, ollama_url=_ollama_url, model=_ollama_model,
-                          domain=_primary_domain())
+                          domains=domains)
     return {"terms": terms}
 
 
@@ -406,12 +432,12 @@ async def search(req: SearchRequest) -> list[dict]:
         raise HTTPException(503, "Index not ready")
     if not req.query.strip():
         return []
-    domain = _primary_domain()
+    domains = _resolve_domains(req)
     results = search_module.search(
         req.query, _store, _embedder, limit=req.limit,
         ollama_url=_ollama_url, ollama_model=_ollama_model,
         preexpanded_terms=req.terms,
-        domain=domain,
+        domains=domains,
     )
     return [
         {

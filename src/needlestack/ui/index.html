@@ -221,6 +221,9 @@ body.show-filenames .card:hover .overlay { padding-bottom: 1.4rem; }
     <label class="checkbox-label">
       <input type="checkbox" id="show-filenames"> filenames
     </label>
+    <label class="checkbox-label" id="all-domains-label" style="display:none;">
+      <input type="checkbox" id="all-domains"> all domains
+    </label>
   </div>
   <div id="status"><div class="spinner"></div><span id="status-text"></span></div>
 </header>
@@ -263,6 +266,12 @@ fetch('/api/sync-status')
       const folderNote = folders > 1 ? ` from ${folders} folders` : '';
       document.getElementById('photo-count').textContent = `  ·  ${d.count.toLocaleString()} photos${folderNote}`;
     }
+    if (d.roots) {
+      const distinctDomains = new Set(d.roots.map(r => r.domain));
+      if (distinctDomains.size > 1) {
+        document.getElementById('all-domains-label').style.display = 'flex';
+      }
+    }
     if (d.new > 0) {
       bannerMsg.textContent = `${d.new} new photo${d.new === 1 ? '' : 's'} found since last index.`;
       banner.style.display = 'flex';
@@ -296,10 +305,11 @@ async function doSearch() {
   setStatus('Expanding query…', true);
 
   try {
+    const allDomains = document.getElementById('all-domains').checked;
     const expandRes = await fetch('/expand', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, all_domains: allDomains }),
     });
     if (!expandRes.ok) throw new Error(expandRes.statusText);
     const { terms } = await expandRes.json();

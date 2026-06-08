@@ -18,12 +18,16 @@ CLIP_WEIGHT = 0.4
 MIN_SCORE = 0.38
 
 
-def _make_expand_prompt(domain: Domain) -> str:
+def _make_expand_prompt(domains: list[Domain]) -> str:
+    names = " and ".join(d.name for d in domains)
+    all_vocab = "; ".join(d.subject_types_prompt() for d in domains)
+    vocab = (f"The archive covers {names} photography and uses this vocabulary: "
+             f"{all_vocab}.")
     return (
         "You are a search synonym expander for a photo archive. "
         "Given a search phrase, return ONLY direct synonyms and alternate names for the exact same thing. "
         "Do NOT include related or associated items — only other names for the identical subject. "
-        f"The archive covers {domain.name} photography and uses this vocabulary: {domain.subject_types_prompt()}. "
+        f"{vocab} "
         "Return ONLY a comma-separated list, no explanation, no punctuation other than commas. "
         "If there are no meaningful synonyms, return only the original term."
         "\n\nSearch phrase: {query}"
@@ -31,12 +35,20 @@ def _make_expand_prompt(domain: Domain) -> str:
 
 
 def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL,
-                  domain: Domain | None = None) -> list[str]:
+                  domain: Domain | None = None,
+                  domains: list[Domain] | None = None) -> list[str]:
     # Deterministic domain synonyms are always included, so known terms expand even
     # when the LLM is unavailable or flubs; the LLM widens coverage beyond the taxonomy.
-    _domain = domain if domain is not None else taxonomy.RAILROAD
-    local = _domain.synonyms_for(query)
-    prompt = _make_expand_prompt(_domain)
+    # `domains` takes precedence over `domain`; both are accepted for backward compat.
+    all_domains = domains if domains else ([domain] if domain is not None else [taxonomy.RAILROAD])
+    seen_local: set[str] = set()
+    local: list[str] = []
+    for d in all_domains:
+        for syn in d.synonyms_for(query):
+            if syn.lower() not in seen_local:
+                seen_local.add(syn.lower())
+                local.append(syn)
+    prompt = _make_expand_prompt(all_domains)
     try:
         resp = httpx.post(
             f"{ollama_url}/api/generate",
@@ -80,9 +92,10 @@ def search(
     ollama_model: str = DEFAULT_MODEL,
     preexpanded_terms: list[str] | None = None,
     domain: Domain | None = None,
+    domains: list[Domain] | None = None,
 ) -> list[dict]:
     terms = preexpanded_terms if preexpanded_terms is not None else _expand_query(
-        query, ollama_url=ollama_url, model=ollama_model, domain=domain
+        query, ollama_url=ollama_url, model=ollama_model, domain=domain, domains=domains
     )
     fts_q = _fts_query(terms)
 
