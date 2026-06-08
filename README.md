@@ -78,6 +78,8 @@ needlestack also has a full command-line interface for scripting, bulk re-indexi
 
 See [GUIDE.md](GUIDE.md) — plain English walkthrough from installation through searching, with a troubleshooting section covering every common failure.
 
+**Found a bug?** Open an issue at [github.com/blwfish/needlehaystack/issues](https://github.com/blwfish/needlehaystack/issues) — click **New issue** and fill in the form. The more detail you can give (what you searched for, what you expected, what happened instead, your OS), the faster it gets fixed.
+
 ---
 
 ## For developers
