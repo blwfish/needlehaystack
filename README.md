@@ -7,21 +7,21 @@ Find photos by describing what's in them — fully local, no cloud, no account.
 > *"Tiger I with winter whitewash, Eastern Front"*  
 > *"F-86 Sabre on the flight line, Korean War"*
 
-needlestack indexes a folder of images using a local vision-language model to write a rich description of each photo, then searches those descriptions with a combination of full-text search and CLIP embeddings. Everything runs on your machine.
+needlestack indexes a folder of images using a local AI model that writes a rich description of each photo, then searches those descriptions by both keywords and visual similarity. Everything runs on your machine.
 
 Works with **railroad**, **naval**, **armor (AFV)**, and **aviation** photo collections — each domain brings its own vocabulary, identifier fields, and synonym expansion.
 
-**Your photos never leave your computer.** All AI processing happens locally via [Ollama](https://ollama.com) — no account, no upload, no cloud. The AI interprets your search query and generates captions; that's it. Nothing goes anywhere.
+**Your photos never leave your computer.** All AI processing happens locally via [Ollama](https://ollama.com) — no account, no upload, no cloud. The AI reads your photos and generates captions; that's it. Nothing goes anywhere.
 
 ---
 
 ## How it works
 
-1. **Index** — for each image, a VLM ([qwen2.5vl:7b](https://ollama.com/library/qwen2.5vl) via Ollama) reads the scene and any text in it — identifiers, markings, road numbers, hull numbers — into a structured, searchable caption matched to your collection's domain; [OpenCLIP](https://github.com/mlfoundations/open_clip) generates a vector embedding. Both are stored in SQLite.
-2. **Search** — your query is expanded to synonyms via the same LLM, then matched against captions with SQLite FTS5 (BM25) and against embeddings with cosine similarity. Results are merged and ranked.
-3. **Browse** — a small local web UI shows thumbnails; click to open in your default viewer, hover for the "show in Finder" button.
+1. **Index** — for each image, a local AI model looks at the scene and reads any text visible in it — road numbers, hull numbers, tail numbers, markings — and writes a detailed, searchable description matched to your collection type. The image's overall visual appearance is also captured as a compact signature. Both are saved on your machine.
+2. **Search** — your query is automatically expanded with related terms and synonyms, then matched against the photo descriptions and visual signatures. Results are merged and ranked by relevance.
+3. **Browse** — a small local webpage shows thumbnails; click to open in your default viewer, hover for the "show in Finder" button.
 
-Runs on Apple Silicon (fast, MPS-accelerated), Intel Mac (slower), and Windows. Supports JPEG, PNG, TIFF, WebP, and common RAW formats (NEF, CR2, CR3, ARW, DNG, and more).
+Runs on Apple Silicon (fast, using your Mac's built-in AI hardware), Intel Mac (slower), and Windows. Supports JPEG, PNG, TIFF, WebP, and common RAW formats (NEF, CR2, CR3, ARW, DNG, and more).
 
 ---
 
@@ -34,7 +34,7 @@ Runs on Apple Silicon (fast, MPS-accelerated), Intel Mac (slower), and Windows. 
 ./install-mac.sh
 ```
 
-The installer checks prerequisites, downloads the LLaVA model (~8 GB), sets up the Python environment, and creates a double-clickable launcher.
+The installer checks prerequisites, downloads the AI model (~8 GB), sets up the environment, and creates a double-clickable launcher.
 
 ### Windows
 
@@ -59,53 +59,9 @@ pixi run needlestack serve
 
 ---
 
-## CLI reference
+## Command line
 
-```
-needlestack index <directory>   Index a folder of images
-needlestack serve               Start the web UI (default port 8484)
-needlestack doctor              Diagnostic report — use --out report.txt to save
-```
-
-**`index` options**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--db` | `~/.needlestack/index.db` | SQLite database path |
-| `--domain` | `railroad` | Collection type: `railroad` / `naval` / `armor` / `aviation` |
-| `--preset` | *(auto-chosen by installer)* | Model tier: `fast` / `balanced` / `quality` |
-| `--model` | — | Exact Ollama model name (overrides `--preset`) |
-| `--ollama` | `http://localhost:11434` | Ollama base URL |
-| `--force` | off | Re-caption already-indexed files |
-| `--thorough` | off | Add a dedicated OCR pass for identifiers (~2× slower) |
-
-**Model presets**
-
-The installer picks the right tier for your hardware automatically. You can override it any time:
-
-| Preset | Model | Best for | Speed |
-|--------|-------|----------|-------|
-| `fast` | `minicpm-v:latest` | CPU-only / low-RAM machines | ~3–5s/photo |
-| `balanced` | `qwen2.5vl:7b` | 16 GB+ Apple Silicon / mid GPU | ~4–6s/photo |
-| `quality` | `qwen3-vl:32b` | 32 GB+ unified / high-VRAM GPU | ~90–120s/photo |
-
-```bash
-needlestack index /photos --preset quality   # switch to the quality tier
-needlestack index /photos --model llava:13b  # use any Ollama model directly
-```
-
-Switching model triggers automatic re-captioning on the next index run — no `--force` needed.
-
-**`serve` options**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--db` | `~/.needlestack/index.db` | SQLite database path |
-| `--port` | `8484` | HTTP port |
-| `--preset` | `balanced` | Model tier for query expansion |
-| `--no-browser` | off | Don't open browser on start |
-
-Indexing is incremental — re-running `index` on the same folder only processes new or changed files. The web UI detects new photos and offers a one-click re-index.
+needlestack also has a full command-line interface for scripting, bulk re-indexing, running on a server, or just personal preference. See [CLI.md](CLI.md) for all commands and options.
 
 ---
 
@@ -120,7 +76,13 @@ Indexing is incremental — re-running `index` on the same folder only processes
 
 ---
 
-## Architecture
+## For non-technical users
+
+See [GUIDE.md](GUIDE.md) — plain English walkthrough from installation through searching, with a troubleshooting section covering every common failure.
+
+---
+
+## For developers
 
 ```
 src/needlestack/
@@ -138,9 +100,3 @@ src/needlestack/
 ```
 
 Search scoring: `score = 0.6 × FTS5_rank + 0.4 × CLIP_cosine`, results below 0.38 are dropped.
-
----
-
-## For non-technical users
-
-See [GUIDE.md](GUIDE.md) — plain English walkthrough from installation through searching, with a troubleshooting section covering every common failure.
