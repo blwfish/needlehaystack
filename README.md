@@ -38,8 +38,6 @@ The installer checks prerequisites, downloads the AI model (~8 GB), sets up the 
 
 ### Windows
 
-> **Untested.** The Windows installer and launcher are written but have never been run on an actual Windows machine. Windows testing is coming — patient users should wait; the brave may proceed with low expectations and are encouraged to report what breaks.
-
 ```
 install-windows.bat
 ```
