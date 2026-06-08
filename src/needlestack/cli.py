@@ -73,8 +73,7 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
     indexed, skipped, failed = index_directory(
         directory, store, captioner, embedder, force=force, thorough=thorough
     )
-    store.set_config("indexed_root", str(directory.resolve()))
-    store.set_config("indexed_domain", domain)
+    store.add_root(str(directory.resolve()), domain)
 
     console.print(
         f"\n[green]Done.[/green]  "

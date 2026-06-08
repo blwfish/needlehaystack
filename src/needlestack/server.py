@@ -81,6 +81,14 @@ class SearchRequest(BaseModel):
     terms: list[str] | None = None  # pre-expanded terms, skips expansion if provided
 
 
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page() -> str:
+    try:
+        return (_ui_path / "setup.html").read_text()
+    except FileNotFoundError as e:
+        raise HTTPException(500, f"UI file missing: {e}")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root() -> str:
     try:
@@ -206,8 +214,7 @@ async def start_indexing(req: dict) -> dict:
                     _index_state.current = current
 
             index_directory(root, store, captioner, embedder, on_progress=_progress)
-            store.set_config("indexed_root", str(root.resolve()))
-            store.set_config("indexed_domain", _captured_domain_name)
+            store.add_root(str(root.resolve()), _captured_domain_name)
             captioner.close()
             captioner = None
 
@@ -243,27 +250,122 @@ async def start_indexing(req: dict) -> dict:
 
 @app.get("/api/sync-status")
 async def sync_status() -> dict:
-    """Check for new or missing files since last index."""
+    """Check for new or missing files across all indexed roots."""
     if _store is None:
-        return {"new": 0, "removed": 0, "root": None}
-    root_str = _store.get_config("indexed_root")
-    if not root_str:
-        return {"new": 0, "removed": 0, "root": None}
-    root = Path(root_str)
+        return {"new": 0, "removed": 0, "roots": []}
+    store = _store
+    roots = store.get_roots()
+    if not roots:
+        return {"new": 0, "removed": 0, "roots": []}
     from .constants import caption_version
-    stale = _store.count_stale_captions(caption_version(_ollama_model))
-    if not root.exists():
-        return {"new": 0, "removed": 0, "stale": stale, "root": root_str, "root_missing": True}
+    stale = store.count_stale_captions(caption_version(_ollama_model))
+    existing_roots = [Path(r["path"]) for r in roots if Path(r["path"]).exists()]
+
+    def _count_new() -> int:
+        return sum(store.count_unindexed(p) for p in existing_roots)
+
     # Both calls do blocking filesystem I/O (rglob + stat); offload to a thread
     # so the async event loop isn't blocked during directory scans.
     new_count, removed_count = await asyncio.gather(
-        asyncio.to_thread(_store.count_unindexed, root),
-        asyncio.to_thread(_store.count_missing),
+        asyncio.to_thread(_count_new),
+        asyncio.to_thread(store.count_missing),
     )
     return {
         "new": new_count, "removed": removed_count, "stale": stale,
-        "root": root_str, "count": _store.count(),
+        "roots": roots, "count": store.count(),
     }
+
+
+@app.post("/api/reindex-all")
+async def reindex_all() -> dict:
+    """Re-index all stored roots in a background thread."""
+    if _store is None:
+        raise HTTPException(503, "Index not ready")
+    roots = _store.get_roots()
+    if not roots:
+        return {"status": "no_roots"}
+
+    with _index_lock:
+        if _index_state.running:
+            return {"status": "already_running"}
+        _index_state.running = True
+        _index_state.done = False
+        _index_state.error = ""
+        _index_state.total = 0
+        _index_state.indexed = 0
+        _index_state.skipped = 0
+        _index_state.failed = 0
+        _index_state.current = ""
+
+    _captured_roots = list(roots)
+    _captured_store = _store
+    _captured_ollama_url_r = _ollama_url
+    _captured_ollama_model_r = _ollama_model
+
+    def _run_all():
+        global _embedder
+        captioner = None
+        current_domain_name = None
+        try:
+            from .captioner import Captioner
+            from .indexer import index_directory
+
+            embedder = Embedder()
+
+            for root_info in _captured_roots:
+                root = Path(root_info["path"])
+                domain_name = root_info["domain"]
+                if not root.exists():
+                    continue
+
+                selected_domain = taxonomy.DOMAINS.get(domain_name, taxonomy.RAILROAD)
+                if domain_name != current_domain_name:
+                    if captioner is not None:
+                        captioner.close()
+                    captioner = Captioner(
+                        model=_captured_ollama_model_r,
+                        base_url=_captured_ollama_url_r,
+                        domain=selected_domain,
+                    )
+                    ok, msg = captioner.check()
+                    if not ok:
+                        captioner.close()
+                        with _index_lock:
+                            _index_state.running = False
+                            _index_state.error = msg
+                        return
+                    current_domain_name = domain_name
+
+                def _progress(total, indexed, skipped, failed, current):
+                    with _index_lock:
+                        _index_state.total = total
+                        _index_state.indexed = indexed
+                        _index_state.skipped = skipped
+                        _index_state.failed = failed
+                        _index_state.current = current
+
+                index_directory(root, _captured_store, captioner, embedder,
+                                on_progress=_progress)
+
+            if captioner is not None:
+                captioner.close()
+            _embedder = embedder
+            with _index_lock:
+                _index_state.running = False
+                _index_state.done = True
+
+        except Exception as e:
+            if captioner is not None:
+                try:
+                    captioner.close()
+                except Exception:
+                    pass
+            with _index_lock:
+                _index_state.running = False
+                _index_state.error = str(e)
+
+    threading.Thread(target=_run_all, daemon=True).start()
+    return {"status": "started"}
 
 
 @app.get("/api/setup/progress")
@@ -281,12 +383,20 @@ async def index_progress() -> dict:
         }
 
 
+def _primary_domain() -> taxonomy.Domain:
+    """Domain for query expansion: first stored root's domain, or railroad fallback."""
+    if _store is None:
+        return taxonomy.RAILROAD
+    roots = _store.get_roots()
+    name = roots[0]["domain"] if roots else (_store.get_config("indexed_domain") or "railroad")
+    return taxonomy.DOMAINS.get(name, taxonomy.RAILROAD)
+
+
 @app.post("/expand")
 async def expand(req: SearchRequest) -> dict:
     from .search import _expand_query
-    domain_name = (_store.get_config("indexed_domain") if _store else None) or "railroad"
-    domain = taxonomy.DOMAINS.get(domain_name, taxonomy.RAILROAD)
-    terms = _expand_query(req.query, ollama_url=_ollama_url, model=_ollama_model, domain=domain)
+    terms = _expand_query(req.query, ollama_url=_ollama_url, model=_ollama_model,
+                          domain=_primary_domain())
     return {"terms": terms}
 
 
@@ -296,8 +406,7 @@ async def search(req: SearchRequest) -> list[dict]:
         raise HTTPException(503, "Index not ready")
     if not req.query.strip():
         return []
-    domain_name = _store.get_config("indexed_domain") or "railroad"
-    domain = taxonomy.DOMAINS.get(domain_name, taxonomy.RAILROAD)
+    domain = _primary_domain()
     results = search_module.search(
         req.query, _store, _embedder, limit=req.limit,
         ollama_url=_ollama_url, ollama_model=_ollama_model,

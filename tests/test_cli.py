@@ -89,7 +89,7 @@ def test_index_persists_domain_to_config(tmp_path):
             main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db"), "--domain", "naval"]
         )
     assert result.exit_code == 0
-    mock_store.set_config.assert_any_call("indexed_domain", "naval")
+    mock_store.add_root.assert_called_once_with(str(tmp_path.resolve()), "naval")
 
 
 def test_index_domain_naval_passes_naval_domain_to_captioner(tmp_path):

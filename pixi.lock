@@ -1069,8 +1069,8 @@ packages:
   timestamp: 1777423252320
 - pypi: ./
   name: needlestack
-  version: 0.1.2
-  sha256: f4020399c720a6612c010004410f9bbab42555128713c09985c77ec66f7f91be
+  version: 0.2.0
+  sha256: b89d5080aa307effd2cd3de376e5221a1b5cff8159a44833cb7423a137112961
   requires_dist:
   - torch>=2.0.0,<3
   - open-clip-torch>=2.20.0,<3

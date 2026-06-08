@@ -1,4 +1,5 @@
 import io
+import json as _json
 import sqlite3
 from pathlib import Path
 
@@ -283,6 +284,35 @@ class Store:
             self.conn.commit()
             self._embedding_cache = None  # deleted rows may be in the cache
         return len(missing_ids)
+
+    def get_roots(self) -> list[dict]:
+        """Return all indexed roots as [{"path": str, "domain": str}].
+
+        Falls back to the legacy indexed_root / indexed_domain keys so old
+        single-root databases work without migration.
+        """
+        raw = self.get_config("indexed_roots")
+        if raw:
+            return _json.loads(raw)
+        root = self.get_config("indexed_root")
+        if root:
+            domain = self.get_config("indexed_domain", "railroad")
+            return [{"path": root, "domain": domain}]
+        return []
+
+    def set_roots(self, roots: list[dict]) -> None:
+        self.set_config("indexed_roots", _json.dumps(roots))
+
+    def add_root(self, path: str, domain: str) -> None:
+        """Register a root directory. Updates domain if root is already known."""
+        roots = self.get_roots()
+        for r in roots:
+            if r["path"] == path:
+                r["domain"] = domain
+                self.set_roots(roots)
+                return
+        roots.append({"path": path, "domain": domain})
+        self.set_roots(roots)
 
     def count_unindexed(self, root: Path) -> int:
         """Count image files in root that are not yet in the index."""
