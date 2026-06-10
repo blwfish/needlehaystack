@@ -14,9 +14,9 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from . import search as search_module
-from . import taxonomy
-from .constants import DEFAULT_MODEL, OLLAMA_URL
-from .embedder import Embedder
+from needlestack_core import taxonomy
+from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL
+from needlestack_core.embedder import Embedder
 from .store import Store
 
 app = FastAPI(title="needlestack")
@@ -183,7 +183,7 @@ async def start_indexing(req: dict) -> dict:
         store = None
         captioner = None
         try:
-            from .captioner import Captioner
+            from needlestack_core.captioner import Captioner
             from .indexer import index_directory
 
             _captured_db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,7 +261,7 @@ async def sync_status() -> dict:
     roots = store.get_roots()
     if not roots:
         return {"new": 0, "removed": 0, "roots": []}
-    from .constants import caption_version
+    from needlestack_core.constants import caption_version
     stale = store.count_stale_captions(caption_version(_ollama_model))
     existing_roots = [Path(r["path"]) for r in roots if Path(r["path"]).exists()]
 
@@ -311,7 +311,7 @@ async def reindex_all() -> dict:
         captioner = None
         current_domain_name = None
         try:
-            from .captioner import Captioner
+            from needlestack_core.captioner import Captioner
             from .indexer import index_directory
 
             embedder = Embedder()

@@ -8,8 +8,8 @@ import click
 import uvicorn
 from rich.console import Console
 
-from .constants import DEFAULT_MODEL, OLLAMA_URL as DEFAULT_OLLAMA, MODEL_PRESETS
-from .taxonomy import DOMAINS
+from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL as DEFAULT_OLLAMA, MODEL_PRESETS
+from needlestack_core.taxonomy import DOMAINS
 
 DEFAULT_DB = Path.home() / ".needlestack" / "index.db"
 DEFAULT_PORT = 8484
@@ -40,11 +40,11 @@ def main() -> None:
 def index(directory: Path, db: str, model: str | None, preset: str | None,
           ollama: str, force: bool, thorough: bool, domain: str) -> None:
     """Index a directory of images."""
-    from .captioner import Captioner
-    from .embedder import Embedder
+    from needlestack_core.captioner import Captioner
+    from needlestack_core.embedder import Embedder
     from .indexer import index_directory
     from .store import Store
-    from .taxonomy import get_domain
+    from needlestack_core.taxonomy import get_domain
 
     if model and preset:
         console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
@@ -123,7 +123,7 @@ def doctor(query: str | None, db: str, model: str, ollama: str, output: str | No
 def serve(db: str, port: int, model: str | None, preset: str | None,
           ollama: str, no_browser: bool) -> None:
     """Start the search server and open the browser."""
-    from .embedder import Embedder
+    from needlestack_core.embedder import Embedder
     from .server import app, close as close_server, init
     from .store import Store
 

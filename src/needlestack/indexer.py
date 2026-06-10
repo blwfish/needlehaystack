@@ -12,9 +12,9 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .captioner import Captioner
-from .constants import caption_version
-from .embedder import Embedder
+from needlestack_core.captioner import Captioner
+from needlestack_core.constants import caption_version
+from needlestack_core.embedder import Embedder
 from .store import Store
 
 
