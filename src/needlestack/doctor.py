@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from .constants import DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, MODEL_PRESETS
+from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, MODEL_PRESETS
 from .search import MIN_SCORE, _expand_query, _fts_query
 
 
@@ -132,7 +132,7 @@ def run(
 
             # Railroad vocabulary check (terms sourced from the single taxonomy)
             _section(out, "Railroad vocabulary in captions")
-            from . import taxonomy
+            from needlestack_core import taxonomy
             terms = taxonomy.frequency_terms()
             for term in terms:
                 n = store.conn.execute(
@@ -173,7 +173,7 @@ def run(
             out.write("\n  CLIP top-5 matches:\n")
             embedder = None
             try:
-                from .embedder import Embedder
+                from needlestack_core.embedder import Embedder
                 embedder = Embedder()
                 query_vec = embedder.embed_text(query)
                 ids, paths, matrix = store.all_embeddings()

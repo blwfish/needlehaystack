@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import needlestack.server as srv
 from needlestack.server import app
-from needlestack.constants import DEFAULT_MODEL, OLLAMA_URL
+from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL
 
 
 def _reset_server_globals():
@@ -240,7 +240,7 @@ def test_sync_status_no_stale_when_current(client_with_store, tmp_path):
     root = tmp_path / "photos"
     root.mkdir()
     store.set_config("indexed_root", str(root))
-    from needlestack.constants import caption_version
+    from needlestack_core.constants import caption_version
     store.upsert(
         str(root / "a.jpg"), "h", "a fresh caption", np.zeros(512, dtype=np.float32),
         b"t", caption_version=caption_version(srv._ollama_model),

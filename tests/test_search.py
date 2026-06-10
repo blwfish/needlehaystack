@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from needlestack.search import _fts_query, _expand_query, search, MIN_SCORE, _make_expand_prompt
-from needlestack import taxonomy
+from needlestack_core import taxonomy
 from needlestack.store import Store
 
 

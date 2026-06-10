@@ -241,7 +241,7 @@ def test_thumbnail_respects_max_size():
 # --- index_directory skip logic ---
 
 def make_captioner():
-    from needlestack.captioner import CaptionResult
+    from needlestack_core.captioner import CaptionResult
     c = MagicMock()
     c.model = "test-model"
     c.caption.return_value = CaptionResult(
@@ -340,7 +340,7 @@ def test_index_empty_caption_not_stored_and_retried(tmp_path):
     fallback returned nothing) must be treated as a FAILURE: the row is not stored with
     the current caption_version, so the next run retries instead of skipping forever."""
     from needlestack.store import Store
-    from needlestack.captioner import CaptionResult
+    from needlestack_core.captioner import CaptionResult
     img_path = tmp_path / "img" / "test.jpg"
     img_path.parent.mkdir()
     make_test_image(img_path)
