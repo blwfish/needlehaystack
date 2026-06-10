@@ -508,6 +508,144 @@ BIRDS = Domain(
 
 
 # ---------------------------------------------------------------------------
+# Motorsports domain
+# ---------------------------------------------------------------------------
+
+_MOTORSPORTS_SUBJECT_TYPES: dict[str, list[str]] = {
+    # Formula / open-wheel single-seaters
+    "Formula 1 car": ["F1 car", "grand prix car", "Formula One car"],
+    "Formula 2 car": ["F2 car", "Formula Two car"],
+    "Formula 3 car": ["F3 car", "Formula Three car"],
+    "Formula 4 car": ["F4 car"],
+    "IndyCar": ["Indy car", "CART", "Champ Car", "championship car"],
+    "Formula Ford": ["FF1600", "Formula Ford 1600"],
+    "Formula Vee": ["FV", "Formula V"],
+    "Formula Atlantic": ["Atlantic car"],
+    # Sports prototypes
+    "GTP prototype": ["GTP", "Hypercar", "LMH", "Le Mans Hypercar"],
+    "LMP2 prototype": ["LMP2", "Le Mans Prototype 2"],
+    "LMP3 prototype": ["LMP3"],
+    "sports prototype": ["sports racer", "prototype", "P-class"],
+    # GT / sports car
+    "GT3 car": ["GT3"],
+    "GT4 car": ["GT4"],
+    "GTLM car": ["GTLM", "GT Le Mans"],
+    "touring car": ["TCR", "TC", "TCA"],
+    # Porsche Club Racing (highest priority)
+    "Porsche 911 GT3 Cup": [
+        "GT3 Cup car", "Cup car", "992 Cup", "991 Cup", "997 Cup", "996 Cup",
+        "Porsche Cup car", "PCR Cup",
+    ],
+    "Porsche Cayman GT4 Clubsport": [
+        "GT4 Clubsport", "Cayman GT4 CS", "982 Clubsport", "981 Clubsport",
+        "Cayman Clubsport",
+    ],
+    "Porsche 718 Cayman": ["718 Cayman", "718 Club Sport"],
+    "Porsche 911": ["911", "992", "991", "997", "996", "993", "964", "930"],
+    # NASCAR
+    "NASCAR Cup car": ["Cup Series car", "Next Gen car", "Cup car"],
+    "NASCAR Xfinity car": ["Xfinity car", "Xfinity Series car"],
+    "NASCAR Truck": ["Truck Series", "Craftsman Truck", "SuperTruck", "pickup race truck"],
+    "Super Late Model": ["SLM", "full-bodied Late Model"],
+    "Late Model": ["Late Model Stock", "LMS", "LMSC", "Late Model Stock Car"],
+    "Limited Late Model": ["Limited Late Model Stock", "LLMS"],
+    "Sportsman": ["Street Stock", "Hobby Stock", "Pure Stock", "Bombers"],
+    "Modified": ["SK Modified", "Tour Modified", "Open Modified", "ACT Modified"],
+    # IMSA / sports car
+    "IMSA GTD Pro car": ["GTD Pro", "GTD Pro car"],
+    "IMSA GTD car": ["GTD car", "GT Daytona"],
+    # Vintage / historic
+    "vintage race car": ["historic race car", "vintage racer", "historic racing car"],
+    "vintage sports car": ["vintage sports racer", "vintage GT"],
+    "vintage stock car": ["historic stock car"],
+    "vintage open wheel": ["historic formula car", "vintage single-seater"],
+    "vintage prototype": ["historic prototype", "vintage sports prototype"],
+    # People / scene subjects (car_number, class, series left blank)
+    "driver portrait": ["racing driver", "driver", "racer", "pilot", "helmeted driver"],
+    "pit crew": ["crew member", "mechanic", "over-the-wall crew", "pit crew member"],
+    "official": ["marshal", "flag marshal", "corner worker", "track official", "steward"],
+    "spectator": ["fan", "crowd", "paddock visitor", "race fan"],
+}
+
+_MOTORSPORTS_SETTINGS: list[str] = [
+    # On-track
+    "on track", "straight", "start/finish straight", "back straight",
+    "braking zone", "chicane", "hairpin", "sweeper", "esses",
+    # Pit / paddock
+    "pit lane", "pit box", "pit exit", "pit entry", "pit wall",
+    "paddock", "garage", "tech inspection", "scrutineering", "weighbridge",
+    # Ceremonial / media
+    "starting grid", "grid walk", "victory lane", "podium", "trophy presentation",
+    "press room", "media center",
+]
+
+MOTORSPORTS = Domain(
+    name="motorsports",
+    subject_types=_MOTORSPORTS_SUBJECT_TYPES,
+    identifier_label="car number",
+    settings=_MOTORSPORTS_SETTINGS,
+    subject_field="is_motorsports",
+    items_field="cars",
+    item_fields=[
+        ("type", "mid"),        # car category or subject: GT3 car, Porsche 911 GT3 Cup, driver portrait, etc.
+        ("make", "mid"),        # Porsche, Ferrari, BMW M4, Chevrolet Camaro, etc.
+        ("car_number", "high"), # race number read from markings on car
+        ("series", "mid"),      # IMSA, Porsche Cup, F1, NASCAR Cup Series, IndyCar, etc.
+        ("class", "mid"),       # GT3, GTD, PCR, Late Model, Cup, etc.
+        ("livery", "phrase"),   # primary colors and major sponsor names
+        ("details", "phrase"),  # specific features: mirror color, wing livery, damage, etc.
+    ],
+    prompt_fragments={
+        "preamble": "This is a motorsports photograph (or might be).",
+        "subject_qualifier": (
+            "true only if the photo actually shows motorsports subject matter — "
+            "race cars, racing drivers, pit crew, race officials, or race facilities"
+        ),
+        "item_singular": "car or person",
+        "id_instruction": (
+            "Fill car_number ONLY from numbers you can actually read on the car "
+            "(door, nose, roof, or rear). Fill make (e.g. Porsche, Ferrari, BMW, "
+            "Chevrolet) and class (e.g. GT3, GTD, PCR, Late Model, Cup Series) from "
+            "body style, livery, and any visible badging. Fill series (e.g. IMSA, "
+            "Porsche Cup, NASCAR Cup Series, IndyCar) if clearly identifiable. "
+            "Record livery primary colors and major sponsor names visible on the car. "
+            "Use details for specific features: mirror color, wing color, aero details, "
+            "visible damage, distinctive markings. "
+            "For people entries (driver portrait, pit crew, official, spectator), "
+            "leave car_number, class, and series blank; fill make with team name if "
+            "identifiable from suit or uniform."
+        ),
+        "era_examples": "modern, 2010s, 2000s, 1990s, 1980s, vintage/historic",
+        "view_instruction": (
+            "tracking shot (panned, car in motion), static/parked, pit stop action, "
+            "starting grid, driver portrait, pit lane, paddock/garage, podium/victory lane, "
+            "detail closeup, overhead/aerial, three-quarter front, three-quarter rear, "
+            "broadside, head-on"
+        ),
+        "type_note": (
+            "Porsche Club Racing: distinguish 911 GT3 Cup (rear-engine, tall rear wing, "
+            "roll cage visible) from Cayman GT4 Clubsport (mid-engine, lower rear wing). "
+            "NASCAR: distinguish Cup Series (Next Gen body, lower roofline) from Xfinity "
+            "(taller greenhouse), Truck Series (pickup body), Super Late Model (full-bodied, "
+            "no fenders), and Sportsman/Street Stock (production-based body). "
+            "Prototypes: GTP/Hypercar (closed cockpit, aggressive aero) vs LMP2/LMP3 "
+            "(open or semi-open cockpit, lower downforce). "
+            "For people-only shots, create one item per person visible."
+        ),
+        "fallback_preamble": (
+            "This is a motorsports photograph. Describe it for a searchable photo index "
+            "using exact motorsports terminology — car type, manufacturer, race number if "
+            "legible, racing series and class, livery colors and sponsor names, and setting. "
+            "For people subjects, describe their role (driver, pit crew, official), any "
+            "visible team affiliation, and what they are doing. "
+            "If this is not a motorsports photo, describe what it actually shows with "
+            "equal specificity. Write in plain sentences, no preamble."
+        ),
+    },
+)
+
+
+# ---------------------------------------------------------------------------
 # Domain registry
 # ---------------------------------------------------------------------------
 
@@ -517,6 +655,7 @@ DOMAINS: dict[str, Domain] = {
     "armor": ARMOR,
     "aviation": AVIATION,
     "birds": BIRDS,
+    "motorsports": MOTORSPORTS,
 }
 
 
