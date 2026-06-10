@@ -1,6 +1,6 @@
 import pytest
 from needlestack import taxonomy
-from needlestack.taxonomy import RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, get_domain, DOMAINS
+from needlestack.taxonomy import RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, MOTORSPORTS, get_domain, DOMAINS
 
 
 # --- backward-compatible module-level helpers (RAILROAD wrappers) ---
@@ -156,6 +156,7 @@ def test_domains_registry_contains_known_domains():
     assert "armor" in DOMAINS
     assert "aviation" in DOMAINS
     assert "birds" in DOMAINS
+    assert "motorsports" in DOMAINS
 
 
 def test_all_domain_subject_fields_are_unique():
@@ -242,3 +243,68 @@ def test_birds_synonyms_for_heron():
 
 def test_birds_synonyms_for_unknown():
     assert BIRDS.synonyms_for("locomotive") == []
+
+
+# --- motorsports domain ---
+
+def test_get_domain_motorsports():
+    assert get_domain("motorsports") is MOTORSPORTS
+
+
+def test_motorsports_domain_fields():
+    assert MOTORSPORTS.name == "motorsports"
+    assert MOTORSPORTS.subject_field == "is_motorsports"
+    assert MOTORSPORTS.items_field == "cars"
+    assert MOTORSPORTS.identifier_label == "car number"
+    # Porsche Club Racing entries
+    assert "Porsche 911 GT3 Cup" in MOTORSPORTS.valid_subject_types
+    assert "Porsche Cayman GT4 Clubsport" in MOTORSPORTS.valid_subject_types
+    # NASCAR entries
+    assert "Late Model" in MOTORSPORTS.valid_subject_types
+    assert "Sportsman" in MOTORSPORTS.valid_subject_types
+    # People entries
+    assert "driver portrait" in MOTORSPORTS.valid_subject_types
+    assert "pit crew" in MOTORSPORTS.valid_subject_types
+
+
+def test_motorsports_domain_high_weight_fields():
+    """car_number must be high-weight so number searches rank well."""
+    weights = {f: w for f, w in MOTORSPORTS.item_fields}
+    assert weights["car_number"] == "high"
+    assert weights["type"] == "mid"
+    assert weights["make"] == "mid"
+    assert weights["series"] == "mid"
+    assert weights["class"] == "mid"
+    assert weights["livery"] == "phrase"
+    assert weights["details"] == "phrase"
+
+
+def test_motorsports_synonyms_for_gt3_cup():
+    syn = MOTORSPORTS.synonyms_for("Porsche 911 GT3 Cup")
+    assert "Cup car" in syn
+    assert "992 Cup" in syn
+    assert "Porsche 911 GT3 Cup" not in syn
+
+
+def test_motorsports_synonyms_for_via_synonym():
+    """Looking up a synonym returns canonical and siblings."""
+    syn = MOTORSPORTS.synonyms_for("Cup car")
+    assert "Porsche 911 GT3 Cup" in syn
+    assert "Cup car" not in syn
+
+
+def test_motorsports_synonyms_for_late_model():
+    syn = MOTORSPORTS.synonyms_for("Late Model")
+    assert "Late Model Stock" in syn
+    assert "LMS" in syn
+
+
+def test_motorsports_synonyms_for_unknown():
+    assert MOTORSPORTS.synonyms_for("locomotive") == []
+
+
+def test_motorsports_people_types_in_subject_types():
+    """People subject types must be present — user distinguishes people vs car shots."""
+    for people_type in ("driver portrait", "pit crew", "official", "spectator"):
+        assert people_type in MOTORSPORTS.valid_subject_types, \
+            f"Missing people type: {people_type}"
