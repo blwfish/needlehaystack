@@ -173,7 +173,7 @@ def test_query_trace_expansion_failure(tmp_path):
     with (
         patch("httpx.get", side_effect=Exception("down")),
         patch("httpx.post", side_effect=Exception("down")),
-        patch("needlestack.embedder.Embedder", return_value=mock_embedder),
+        patch("needlestack_core.embedder.Embedder", return_value=mock_embedder),
     ):
         report = run(db_path=db_path, query="steam locomotive")
     assert "Search trace" in report
@@ -193,7 +193,7 @@ def test_query_trace_clip_failure_is_graceful(tmp_path):
     with (
         patch("httpx.get", return_value=tags),
         patch("httpx.post", return_value=gen),
-        patch("needlestack.embedder.Embedder", return_value=mock_embedder),
+        patch("needlestack_core.embedder.Embedder", return_value=mock_embedder),
     ):
         report = run(db_path=db_path, query="caboose", ollama_model="qwen2.5vl:7b")
     assert "CLIP" in report
@@ -212,7 +212,7 @@ def test_query_trace_empty_index_no_crash(tmp_path):
     with (
         patch("httpx.get", return_value=tags),
         patch("httpx.post", return_value=gen),
-        patch("needlestack.embedder.Embedder", return_value=mock_embedder),
+        patch("needlestack_core.embedder.Embedder", return_value=mock_embedder),
     ):
         report = run(db_path=db_path, query="steam locomotive", ollama_model="qwen2.5vl:7b")
     assert "Search trace" in report

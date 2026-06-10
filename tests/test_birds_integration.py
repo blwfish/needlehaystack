@@ -13,8 +13,8 @@ Skipped automatically if Ollama is not reachable.
 import pytest
 from PIL import Image
 
-from needlestack.captioner import Captioner
-from needlestack.taxonomy import BIRDS
+from needlestack_core.captioner import Captioner
+from needlestack_core.taxonomy import BIRDS
 
 
 @pytest.mark.integration

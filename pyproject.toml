@@ -4,12 +4,9 @@ version = "0.3.0"
 description = "Find photos by describing what's in them"
 requires-python = ">=3.12"
 dependencies = [
-    "torch>=2.0.0,<3",
-    "open-clip-torch>=2.20.0,<3",
+    "needlestack-core @ git+https://github.com/blwfish/needlestack-core@main",
     "Pillow>=10.0.0,<11",
     "rawpy>=0.18.0",
-    "numpy>=1.24.0,<2",
-    "httpx>=0.25.0,<1",
     "rich>=13.0.0,<14",
     "fastapi>=0.100.0,<1",
     "uvicorn[standard]>=0.23.0,<1",

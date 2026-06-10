@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from needlestack.constants import OLLAMA_URL
+from needlestack_core.constants import OLLAMA_URL
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "birds"
 

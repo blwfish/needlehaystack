@@ -5,10 +5,10 @@ import numpy as np
 
 _log = logging.getLogger(__name__)
 
-from . import taxonomy
-from .taxonomy import Domain
-from .constants import DEFAULT_MODEL, OLLAMA_URL
-from .embedder import Embedder
+from needlestack_core import taxonomy
+from needlestack_core.taxonomy import Domain
+from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL
+from needlestack_core.embedder import Embedder
 from .store import Store
 
 # Weight blend: captions carry the detail, CLIP catches visual similarity

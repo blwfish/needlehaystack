@@ -42,9 +42,9 @@ def _index_patches(captioner=None, indexed=5, skipped=2, failed=0):
     mock_store = MagicMock()
     mock_store.count.return_value = 0
     return (
-        patch("needlestack.captioner.Captioner", return_value=cap),
+        patch("needlestack_core.captioner.Captioner", return_value=cap),
         patch("needlestack.store.Store", return_value=mock_store),
-        patch("needlestack.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
         patch("needlestack.indexer.index_directory", return_value=(indexed, skipped, failed)),
     )
 
@@ -58,7 +58,7 @@ def test_index_model_and_preset_mutual_exclusion(tmp_path):
 
 def test_index_captioner_check_fails_exits_1(tmp_path):
     r = runner()
-    with patch("needlestack.captioner.Captioner", return_value=_mock_captioner_fail()):
+    with patch("needlestack_core.captioner.Captioner", return_value=_mock_captioner_fail()):
         result = r.invoke(main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db")])
     assert result.exit_code == 1
     assert "Error" in result.output
@@ -80,9 +80,9 @@ def test_index_persists_domain_to_config(tmp_path):
     mock_store = MagicMock()
     mock_store.count.return_value = 0
     with (
-        patch("needlestack.captioner.Captioner", return_value=_mock_captioner_ok()),
+        patch("needlestack_core.captioner.Captioner", return_value=_mock_captioner_ok()),
         patch("needlestack.store.Store", return_value=mock_store),
-        patch("needlestack.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
         patch("needlestack.indexer.index_directory", return_value=(0, 0, 0)),
     ):
         result = r.invoke(
@@ -103,9 +103,9 @@ def test_index_domain_naval_passes_naval_domain_to_captioner(tmp_path):
     mock_store = MagicMock()
     mock_store.count.return_value = 0
     with (
-        patch("needlestack.captioner.Captioner", side_effect=captioner_factory),
+        patch("needlestack_core.captioner.Captioner", side_effect=captioner_factory),
         patch("needlestack.store.Store", return_value=mock_store),
-        patch("needlestack.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
         patch("needlestack.indexer.index_directory", return_value=(0, 0, 0)),
     ):
         r.invoke(
@@ -125,9 +125,9 @@ def test_index_default_domain_is_railroad(tmp_path):
     mock_store = MagicMock()
     mock_store.count.return_value = 0
     with (
-        patch("needlestack.captioner.Captioner", side_effect=captioner_factory),
+        patch("needlestack_core.captioner.Captioner", side_effect=captioner_factory),
         patch("needlestack.store.Store", return_value=mock_store),
-        patch("needlestack.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
         patch("needlestack.indexer.index_directory", return_value=(0, 0, 0)),
     ):
         r.invoke(main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db")])
@@ -136,7 +136,7 @@ def test_index_default_domain_is_railroad(tmp_path):
 
 def test_index_preset_resolves_model(tmp_path):
     """--preset fast should resolve to the fast preset model, not the default."""
-    from needlestack.constants import MODEL_PRESETS
+    from needlestack_core.constants import MODEL_PRESETS
     r = runner()
     captured_models = []
 
@@ -147,9 +147,9 @@ def test_index_preset_resolves_model(tmp_path):
     mock_store = MagicMock()
     mock_store.count.return_value = 0
     with (
-        patch("needlestack.captioner.Captioner", side_effect=captioner_factory),
+        patch("needlestack_core.captioner.Captioner", side_effect=captioner_factory),
         patch("needlestack.store.Store", return_value=mock_store),
-        patch("needlestack.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
         patch("needlestack.indexer.index_directory", return_value=(0, 0, 0)),
     ):
         r.invoke(main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db"), "--preset", "fast"])
@@ -205,7 +205,7 @@ def _serve_patches(tmp_path, in_use_ports=None, httpx_resp=None):
     sock_factory = _mock_socket_factory(in_use_ports or set())
     return db_path, (
         patch("socket.socket", side_effect=sock_factory),
-        patch("needlestack.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
         patch("needlestack.server.init"),
         patch("uvicorn.run"),
         patch("webbrowser.open"),
