@@ -24,6 +24,18 @@ def test_cap_image_at_exact_boundary_not_downsampled():
     assert result.size == (5000, 5000)
 
 
+def test_cap_image_at_boundary_takes_early_return_branch():
+    """The at-boundary image must take the early-return path, not thumbnail().
+
+    Size alone doesn't prove this: Pillow's thumbnail() at target=(5000,5000) is a
+    no-op, so both branches produce the same output. Use a mock to detect the branch.
+    """
+    img = Image.new("RGB", (5000, 5000))
+    with patch.object(img, "thumbnail", wraps=img.thumbnail) as mock_thumb:
+        _cap_image(img)
+    mock_thumb.assert_not_called()  # AT boundary takes the early-return, not thumbnail
+
+
 def test_cap_image_just_below_boundary_not_downsampled():
     # 4999x5000 = 24_995_000 < MAX_PIXELS
     img = Image.new("RGB", (4999, 5000))

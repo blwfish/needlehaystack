@@ -162,6 +162,26 @@ def test_get_config_missing_key_returns_none(store):
     assert store.get_config("nonexistent") is None
 
 
+def test_get_config_missing_key_returns_explicit_default(store):
+    """Non-None default is returned on a missing key — distinct call form from None default."""
+    assert store.get_config("nonexistent", "railroad") == "railroad"
+
+
+def test_get_roots_domain_falls_back_to_railroad_when_not_set(store):
+    """Legacy single-root path: if indexed_domain is absent, the domain defaults to 'railroad'."""
+    store.set_config("indexed_root", "/photos")
+    # indexed_domain NOT set
+    roots = store.get_roots()
+    assert roots == [{"path": "/photos", "domain": "railroad"}]
+
+
+def test_get_roots_returns_empty_on_malformed_json(store):
+    """Malformed indexed_roots JSON logs a warning and returns [] rather than raising."""
+    store.set_config("indexed_roots", "not valid json {{")
+    roots = store.get_roots()
+    assert roots == []
+
+
 def test_set_and_get_config(store):
     store.set_config("indexed_root", "/photos")
     assert store.get_config("indexed_root") == "/photos"
