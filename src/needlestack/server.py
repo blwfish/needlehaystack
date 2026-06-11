@@ -132,6 +132,9 @@ async def browse_folder() -> dict:
             return {"error": "Folder picker not supported on this platform"}
 
         if not path:
+            # Distinguish user cancellation (non-zero exit) from empty selection (zero exit).
+            if result.returncode != 0:
+                return {"error": f"Folder picker failed (exit {result.returncode}): {result.stderr.strip()}"}
             return {"cancelled": True}
         return {"path": path}
     except Exception as e:
@@ -222,14 +225,13 @@ async def start_indexing(req: dict) -> dict:
             captioner.close()
             captioner = None
 
-            # Publish globals before signaling done so any request that observes
-            # done=True also sees a ready _store and _embedder.
-            _store = store
-            _embedder = embedder
-            _setup_mode = False
-            store = None  # handed off to _store; don't close in the except path
-
+            # Publish globals and signal done atomically under the lock so any thread
+            # that observes done=True is guaranteed to also see _store and _embedder set.
             with _index_lock:
+                _store = store
+                _embedder = embedder
+                _setup_mode = False
+                store = None  # handed off to _store; don't close in the except path
                 _index_state.running = False
                 _index_state.done = True
 
@@ -408,7 +410,11 @@ def _all_domains() -> list[taxonomy.Domain]:
         if name not in seen:
             seen.add(name)
             if name not in taxonomy.DOMAINS:
-                _log.warning("Unknown domain %r in index — falling back to railroad", name)
+                _log.warning(
+                    "Unknown domain %r in index — falling back to railroad. "
+                    "Available domains: %s",
+                    name, ", ".join(taxonomy.DOMAINS),
+                )
             result.append(taxonomy.DOMAINS.get(name, taxonomy.RAILROAD))
     return result or [taxonomy.RAILROAD]
 

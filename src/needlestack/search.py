@@ -77,6 +77,18 @@ def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT
     return unique[:13]
 
 
+def _normalize_clip(raw: np.ndarray) -> np.ndarray:
+    """Min-max normalize CLIP cosine scores to [0, 1].
+
+    Tied case (all equal, including single-image index) maps to 1.0 so a lone
+    result clears MIN_SCORE (CLIP_WEIGHT × 1.0 = 0.40 > 0.38).
+    """
+    mn, mx = raw.min(), raw.max()
+    if mx > mn:
+        return (raw - mn) / (mx - mn)
+    return np.full_like(raw, 1.0)
+
+
 def _fts_query(terms: list[str]) -> str:
     # FTS5 OR query; embed each term as a phrase, doubling any internal " per FTS5 spec.
     escaped = ['"' + t.replace('"', '""') + '"' for t in terms]
@@ -106,10 +118,7 @@ def search(
     clip_scores: dict[int, float] = {}
     if len(ids) > 0:
         raw = (matrix @ query_vec).astype(float)
-        mn, mx = raw.min(), raw.max()
-        # When all scores are equal (including single-image index), assign 1.0 so
-        # a CLIP-only result clears MIN_SCORE (CLIP_WEIGHT × 1.0 = 0.40 > 0.38).
-        norm = (raw - mn) / (mx - mn) if mx > mn else np.full_like(raw, 1.0)
+        norm = _normalize_clip(raw)
         clip_scores = dict(zip(ids, norm.tolist()))
 
     # FTS5 over captions using expanded query

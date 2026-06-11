@@ -248,7 +248,7 @@ def test_serve_port_in_use_different_process_finds_next_free(tmp_path):
 
 def test_serve_no_free_port_exits_1(tmp_path):
     """All 20 candidate ports in use → exit 1."""
-    in_use = set(range(8484, 8484 + 25))   # more than the 20-port scan range
+    in_use = set(range(8484, 8484 + 25))   # more than the 20-port scan range (port+1..port+20)
     db_path, patches = _serve_patches(tmp_path, in_use_ports=in_use)
     r = runner()
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:

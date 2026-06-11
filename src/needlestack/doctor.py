@@ -9,7 +9,7 @@ import httpx
 import numpy as np
 
 from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, MODEL_PRESETS
-from .search import MIN_SCORE, _expand_query, _fts_query
+from .search import MIN_SCORE, _expand_query, _fts_query, _normalize_clip
 
 
 def _section(out: io.StringIO, title: str) -> None:
@@ -97,123 +97,123 @@ def run(
     else:
         from .store import Store
         store = Store(db_path)
+        try:
+            count = store.count()
+            _row(out, "Images indexed", str(count))
 
-        count = store.count()
-        _row(out, "Images indexed", str(count))
+            if count > 0:
+                row = store.conn.execute(
+                    "SELECT MIN(indexed_at), MAX(indexed_at) FROM images"
+                ).fetchone()
+                _row(out, "First indexed", row[0] or "unknown")
+                _row(out, "Last indexed", row[1] or "unknown")
 
-        if count > 0:
-            row = store.conn.execute(
-                "SELECT MIN(indexed_at), MAX(indexed_at) FROM images"
-            ).fetchone()
-            _row(out, "First indexed", row[0] or "unknown")
-            _row(out, "Last indexed", row[1] or "unknown")
-
-            no_caption = store.conn.execute(
-                "SELECT COUNT(*) FROM images WHERE caption IS NULL OR caption = ''"
-            ).fetchone()[0]
-            _row(out, "Missing captions", str(no_caption))
-
-            no_embedding = store.conn.execute(
-                "SELECT COUNT(*) FROM images WHERE embedding IS NULL"
-            ).fetchone()[0]
-            _row(out, "Missing embeddings", str(no_embedding))
-
-            db_size_mb = db_path.stat().st_size / 1024 / 1024
-            _row(out, "Database size", f"{db_size_mb:.1f} MB")
-
-            # Sample captions
-            _section(out, "Caption samples (5 random)")
-            rows = store.conn.execute(
-                "SELECT path, caption FROM images WHERE caption IS NOT NULL ORDER BY RANDOM() LIMIT 5"
-            ).fetchall()
-            for path, caption in rows:
-                out.write(f"\n  {Path(path).name}\n")
-                out.write(f"  {(caption or '').strip()[:300]}\n")
-
-            # Railroad vocabulary check (terms sourced from the single taxonomy)
-            _section(out, "Railroad vocabulary in captions")
-            from needlestack_core import taxonomy
-            terms = taxonomy.frequency_terms()
-            for term in terms:
-                n = store.conn.execute(
-                    "SELECT COUNT(*) FROM images WHERE caption LIKE ?", (f"%{term}%",)
+                no_caption = store.conn.execute(
+                    "SELECT COUNT(*) FROM images WHERE caption IS NULL OR caption = ''"
                 ).fetchone()[0]
-                bar = "█" * min(n, 40)
-                out.write(f"  {term:<16} {n:>4}  {bar}\n")
+                _row(out, "Missing captions", str(no_caption))
 
-        # --- query trace ---
-        if query:
-            _section(out, f"Search trace: {query!r}")
+                no_embedding = store.conn.execute(
+                    "SELECT COUNT(*) FROM images WHERE embedding IS NULL"
+                ).fetchone()[0]
+                _row(out, "Missing embeddings", str(no_embedding))
 
-            # Expansion
-            out.write("\n  Query expansion:\n")
-            try:
-                terms = _expand_query(query, ollama_url=ollama_url, model=ollama_model)
-                for t in terms:
-                    out.write(f"    • {t}\n")
-                fts_q = _fts_query(terms)
-            except Exception as e:
-                out.write(f"    FAILED: {e}\n")
-                terms = [query]
-                fts_q = f'"{query}"'
+                db_size_mb = db_path.stat().st_size / 1024 / 1024
+                _row(out, "Database size", f"{db_size_mb:.1f} MB")
 
-            # FTS results (before score threshold)
-            out.write("\n  FTS5 matches (before score threshold):\n")
-            fts_rows = store.fts_search(fts_q, limit=20)
-            if fts_rows:
-                for image_id, path, rank in fts_rows[:10]:
-                    rows2 = store.get_by_ids([image_id])
-                    caption = rows2[0]["caption"][:120] if rows2 else ""
-                    out.write(f"    [{rank:+.2f}] {Path(path).name}\n")
-                    out.write(f"           {caption}\n")
-            else:
-                out.write("    (none)\n")
+                # Sample captions
+                _section(out, "Caption samples (5 random)")
+                rows = store.conn.execute(
+                    "SELECT path, caption FROM images WHERE caption IS NOT NULL ORDER BY RANDOM() LIMIT 5"
+                ).fetchall()
+                for path, caption in rows:
+                    out.write(f"\n  {Path(path).name}\n")
+                    out.write(f"  {(caption or '').strip()[:300]}\n")
 
-            # CLIP scores
-            out.write("\n  CLIP top-5 matches:\n")
-            embedder = None
-            try:
-                from needlestack_core.embedder import Embedder
-                embedder = Embedder()
-                query_vec = embedder.embed_text(query)
-                ids, paths, matrix = store.all_embeddings()
-                if len(ids) > 0:
-                    raw = (matrix @ query_vec).astype(float)
-                    top_idx = np.argsort(raw)[::-1][:5]
-                    mn, mx = raw.min(), raw.max()
-                    for i in top_idx:
-                        norm = (raw[i] - mn) / (mx - mn) if mx > mn else 0.0
-                        rows2 = store.get_by_ids([ids[i]])
-                        caption = rows2[0]["caption"][:100] if rows2 else ""
-                        out.write(f"    [{norm:.3f}] {Path(paths[i]).name}\n")
+                # Railroad vocabulary check (terms sourced from the single taxonomy)
+                _section(out, "Railroad vocabulary in captions")
+                from needlestack_core import taxonomy
+                terms = taxonomy.frequency_terms()
+                for term in terms:
+                    n = store.conn.execute(
+                        "SELECT COUNT(*) FROM images WHERE caption LIKE ?", (f"%{term}%",)
+                    ).fetchone()[0]
+                    bar = "█" * min(n, 40)
+                    out.write(f"  {term:<16} {n:>4}  {bar}\n")
+
+            # --- query trace ---
+            if query:
+                _section(out, f"Search trace: {query!r}")
+
+                # Expansion
+                out.write("\n  Query expansion:\n")
+                try:
+                    terms = _expand_query(query, ollama_url=ollama_url, model=ollama_model)
+                    for t in terms:
+                        out.write(f"    • {t}\n")
+                    fts_q = _fts_query(terms)
+                except Exception as e:
+                    out.write(f"    FAILED: {e}\n")
+                    terms = [query]
+                    fts_q = f'"{query}"'
+
+                # FTS results (before score threshold)
+                out.write("\n  FTS5 matches (before score threshold):\n")
+                fts_rows = store.fts_search(fts_q, limit=20)
+                if fts_rows:
+                    for image_id, path, rank in fts_rows[:10]:
+                        rows2 = store.get_by_ids([image_id])
+                        caption = rows2[0]["caption"][:120] if rows2 else ""
+                        out.write(f"    [{rank:+.2f}] {Path(path).name}\n")
                         out.write(f"           {caption}\n")
                 else:
-                    out.write("    (index empty)\n")
-            except Exception as e:
-                out.write(f"    FAILED: {e}\n")
+                    out.write("    (none)\n")
 
-            # Final merged results
-            out.write(f"\n  Final results (MIN_SCORE={MIN_SCORE}):\n")
-            if embedder is None:
-                out.write("    SKIPPED — embedder unavailable (see CLIP section above)\n")
-            else:
+                # CLIP scores
+                out.write("\n  CLIP top-5 matches:\n")
+                embedder = None
                 try:
-                    from .search import search
-                    results = search(
-                        query, store, embedder,
-                        limit=10, ollama_url=ollama_url, ollama_model=ollama_model,
-                        preexpanded_terms=terms,
-                    )
-                    if results:
-                        for r in results:
-                            out.write(f"    [{r['score']:.3f}] {Path(r['path']).name}\n")
-                            out.write(f"           {(r['caption'] or '')[:100]}\n")
+                    from needlestack_core.embedder import Embedder
+                    embedder = Embedder()
+                    query_vec = embedder.embed_text(query)
+                    ids, paths, matrix = store.all_embeddings()
+                    if len(ids) > 0:
+                        raw = (matrix @ query_vec).astype(float)
+                        norm = _normalize_clip(raw)
+                        top_idx = np.argsort(raw)[::-1][:5]
+                        for i in top_idx:
+                            rows2 = store.get_by_ids([ids[i]])
+                            caption = rows2[0]["caption"][:100] if rows2 else ""
+                            out.write(f"    [{norm[i]:.3f}] {Path(paths[i]).name}\n")
+                            out.write(f"           {caption}\n")
                     else:
-                        out.write(f"    (no results above threshold {MIN_SCORE})\n")
+                        out.write("    (index empty)\n")
                 except Exception as e:
                     out.write(f"    FAILED: {e}\n")
 
-        store.close()
+                # Final merged results
+                out.write(f"\n  Final results (MIN_SCORE={MIN_SCORE}):\n")
+                if embedder is None:
+                    out.write("    SKIPPED — embedder unavailable (see CLIP section above)\n")
+                else:
+                    try:
+                        from .search import search
+                        results = search(
+                            query, store, embedder,
+                            limit=10, ollama_url=ollama_url, ollama_model=ollama_model,
+                            preexpanded_terms=terms,
+                        )
+                        if results:
+                            for r in results:
+                                out.write(f"    [{r['score']:.3f}] {Path(r['path']).name}\n")
+                                out.write(f"           {(r['caption'] or '')[:100]}\n")
+                        else:
+                            out.write(f"    (no results above threshold {MIN_SCORE})\n")
+                    except Exception as e:
+                        out.write(f"    FAILED: {e}\n")
+
+        finally:
+            store.close()
 
     out.write("\n")
     return out.getvalue()
