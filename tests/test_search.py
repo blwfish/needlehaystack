@@ -86,7 +86,7 @@ def test_expand_query_caps_length():
     mock_resp.json.return_value = {"response": ", ".join(f"term{i}" for i in range(50))}
     with patch("needlestack.search.httpx.post", return_value=mock_resp):
         result = _expand_query("caboose")
-    assert len(result) <= 13
+    assert len(result) == 13  # cap is exactly 13, not "at most 13"
 
 
 def test_expand_query_strips_whitespace():
@@ -174,10 +174,70 @@ def test_search_empty_index(tmp_path):
 
 
 def test_search_results_ordered_by_score(populated_store):
-    with patch("needlestack.search._expand_query", return_value=["caboose", "waycar"]):
-        results = search("caboose", populated_store, mock_embedder())
+    # "caboose" FTS-matches caboose.jpg; "locomotive" FTS-matches loco.jpg.
+    # mock_embedder(1) aligns with the caboose embedding — caboose.jpg scores highest
+    # via both FTS and CLIP, loco.jpg scores via FTS alone. Both clear MIN_SCORE.
+    with patch("needlestack.search._expand_query", return_value=["caboose", "locomotive"]):
+        results = search("caboose", populated_store, mock_embedder(1))
+    assert len(results) >= 2, "need ≥2 results to verify ordering"
     scores = [r["score"] for r in results]
     assert scores == sorted(scores, reverse=True)
+
+
+# --- MIN_SCORE boundary: >= not > ---
+
+def test_min_score_boundary_is_gte_not_gt(tmp_path):
+    """Score exactly equal to MIN_SCORE must be included (>= not >)."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "b.db")
+    vec = fake_embedding(1)
+    s.upsert("/only.jpg", "h1", "locomotive", vec, b"t")
+
+    embedder = MagicMock()
+    embedder.embed_text.return_value = vec  # perfect match → CLIP normalizes to 1.0
+
+    # Single doc: CLIP tie → 1.0, FTS tie → 1.0. Combined = CLIP_WEIGHT*1 + FTS_WEIGHT*1 = 1.0.
+    # At MIN_SCORE=1.0 the result is exactly on the boundary — must be included.
+    with patch("needlestack.search.MIN_SCORE", 1.0):
+        at_boundary = search("locomotive", s, embedder, preexpanded_terms=["locomotive"])
+    # At MIN_SCORE=1.001 the result is just above — must be excluded.
+    with patch("needlestack.search.MIN_SCORE", 1.001):
+        above_boundary = search("locomotive", s, embedder, preexpanded_terms=["locomotive"])
+
+    assert len(at_boundary) == 1    # >= means at-boundary is included
+    assert len(above_boundary) == 0  # strictly above is excluded
+    s.close()
+
+
+# --- _fts_query empty list ---
+
+def test_fts_query_empty_list_returns_empty_string():
+    assert _fts_query([]) == ""
+
+
+def test_search_with_empty_preexpanded_terms(tmp_path):
+    """preexpanded_terms=[] must not raise; FTS produces empty query → handled gracefully."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "e.db")
+    s.upsert("/a.jpg", "h1", "a caboose", fake_embedding(1), b"t")
+    results = search("anything", s, mock_embedder(), preexpanded_terms=[])
+    assert isinstance(results, list)  # no exception
+    s.close()
+
+
+# --- _expand_query(domains=[]) empty list is same fallback as None ---
+
+def test_expand_query_domains_empty_list_falls_back_to_railroad():
+    """Empty list is falsy → same RAILROAD fallback as domains=None. Pinned explicitly."""
+    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+        result = _expand_query("caboose", domains=[])
+    assert "waycar" in result  # RAILROAD synonyms included via fallback
+
+
+def test_expand_query_domains_none_falls_back_to_railroad():
+    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+        result = _expand_query("caboose", domains=None)
+    assert "waycar" in result
 
 
 # --- single-image edge cases (H4 / M6 normalization fixes) ---

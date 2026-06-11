@@ -129,6 +129,44 @@ def test_open_returns_404_for_missing_id(client_with_store):
 
 # --- _all_domains / _resolve_domains ---
 
+def test_root_returns_setup_page_when_store_empty_and_indexing_not_done(tmp_path):
+    """root() must redirect to setup.html when store is present but empty and done=False."""
+    from needlestack.store import Store
+    from fastapi.testclient import TestClient
+    (tmp_path / "setup.html").write_text("<html>setup</html>")
+    (tmp_path / "index.html").write_text("<html>index</html>")
+    store = Store(tmp_path / "index.db")  # empty, count() == 0
+    srv._index_state = srv._IndexState()  # done=False by default
+    srv.init(store=store, embedder=MagicMock(), ui_path=tmp_path,
+             db_path=tmp_path / "index.db",
+             ollama_url=OLLAMA_URL, ollama_model=DEFAULT_MODEL, setup_mode=False)
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "setup" in resp.text.lower()
+    finally:
+        store.close()
+        _reset_server_globals()
+
+
+def test_all_domains_unknown_domain_falls_back_to_railroad(tmp_path, caplog):
+    """An unrecognized domain name in the index logs a warning and falls back to railroad."""
+    import logging
+    from needlestack.store import Store
+    store = Store(tmp_path / "test.db")
+    store.add_root("/photos", "unknown_domain_xyz")
+    srv._store = store
+    try:
+        with caplog.at_level(logging.WARNING, logger="needlestack.server"):
+            result = srv._all_domains()
+        assert result[0].name == "railroad"
+        assert any("unknown_domain_xyz" in r.message for r in caplog.records)
+    finally:
+        store.close()
+        srv._store = None
+
+
 def test_all_domains_returns_distinct_in_order(tmp_path):
     from needlestack.store import Store
     store = Store(tmp_path / "test.db")

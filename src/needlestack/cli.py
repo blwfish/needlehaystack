@@ -169,7 +169,7 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
             pass
         # Something else owns the port — find the next free one
         original = port
-        for candidate in range(port + 1, port + 20):
+        for candidate in range(port + 1, port + 21):
             if _port_free(candidate):
                 port = candidate
                 break

@@ -1,9 +1,12 @@
 import io
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
 import rawpy
 from PIL import Image, ImageOps
+
+_log = logging.getLogger(__name__)
 from rich.progress import (
     MofNCompleteColumn,
     Progress,
@@ -36,6 +39,8 @@ MAX_PIXELS = 25_000_000  # 25MP cap; downstream uses max 1024px so higher res is
 
 
 def _file_hash(path: Path) -> str:
+    # Uses mtime+size, not content hash — fast, but a same-second same-size in-place
+    # edit won't be detected. Acceptable trade-off for indexing throughput.
     stat = path.stat()
     return f"{stat.st_mtime:.0f}-{stat.st_size}"
 
@@ -154,6 +159,8 @@ def index_directory(
                 thumb = _thumbnail(image)
                 store.upsert(
                     str(path), hash_, result.caption, embedding, thumb,
+                    # result.description is intentionally omitted: it's already synthesized
+                    # into result.caption, so a separate column would be redundant.
                     reporting_marks=result.reporting_marks,
                     equipment=result.equipment,
                     structured_json=result.structured_json,
@@ -163,6 +170,10 @@ def index_directory(
                 )
                 indexed += 1
             except Exception as e:
+                # Broad catch is intentional: no single image should kill the whole run.
+                # Always log via the module logger so failures are visible even on the
+                # browser-polling (on_progress) path where progress_ctx is None.
+                _log.warning("Failed to index %s: %s", path.name, e)
                 if progress_ctx:
                     progress_ctx.log(f"[red]Failed[/red] {path.name}: {e}")
                 failed += 1

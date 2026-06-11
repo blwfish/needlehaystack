@@ -218,9 +218,23 @@ class Store:
         ).fetchall()
         if not rows:
             return [], [], np.empty((0, 512), dtype=np.float32)
-        ids = [r[0] for r in rows]
-        paths = [r[1] for r in rows]
-        matrix = np.stack([_dec(r[2]) for r in rows])
+        ids = []
+        paths = []
+        vecs = []
+        for r in rows:
+            try:
+                vecs.append(_dec(r[2]))
+            except (ValueError, OSError):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Corrupt embedding BLOB for %s — skipping", r[1]
+                )
+                continue
+            ids.append(r[0])
+            paths.append(r[1])
+        if not ids:
+            return [], [], np.empty((0, 512), dtype=np.float32)
+        matrix = np.stack(vecs)
         self._embedding_cache = ids, paths, matrix
         return self._embedding_cache
 
@@ -243,6 +257,10 @@ class Store:
         return rows
 
     def get_by_ids(self, ids: list[int]) -> list[dict]:
+        # Returns only the fields needed by search results and the thumbnail endpoint.
+        # reporting_marks, equipment, view, is_railroad, structured_json are intentionally
+        # omitted — they're stored for FTS weighting and re-indexing checks, not served
+        # to the UI. Extend this SELECT if a caller ever needs them.
         if not ids:
             return []
         placeholders = ",".join("?" * len(ids))
@@ -293,7 +311,14 @@ class Store:
         """
         raw = self.get_config("indexed_roots")
         if raw:
-            return _json.loads(raw)
+            try:
+                return _json.loads(raw)
+            except _json.JSONDecodeError:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "indexed_roots config is malformed JSON — treating as empty"
+                )
+                return []
         root = self.get_config("indexed_root")
         if root:
             domain = self.get_config("indexed_domain", "railroad")
