@@ -276,6 +276,25 @@ def test_single_doc_returns_and_scores_correctly(tmp_path):
 
 # --- _expand_query logging ---
 
+def test_expand_query_with_truncation_reports_true_when_capped():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"response": ", ".join(f"term{i}" for i in range(50))}
+    with patch("needlestack.search.httpx.post", return_value=mock_resp):
+        from needlestack.search import expand_query_with_truncation
+        terms, truncated = expand_query_with_truncation("caboose")
+    assert len(terms) == 13
+    assert truncated is True
+
+
+def test_expand_query_with_truncation_reports_false_when_not_capped():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"response": "waycar, hack"}
+    with patch("needlestack.search.httpx.post", return_value=mock_resp):
+        from needlestack.search import expand_query_with_truncation
+        terms, truncated = expand_query_with_truncation("caboose")
+    assert truncated is False
+
+
 def test_expand_query_multi_domain_unions_synonyms():
     """BIRDS synonyms for 'raptor' appear when BIRDS domain is included."""
     with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
@@ -305,3 +324,62 @@ def test_expand_query_logs_warning_on_done_reason_length(caplog):
             _expand_query("caboose")
     assert any("truncated" in r.message.lower() or "token limit" in r.message.lower()
                for r in caplog.records)
+
+
+# --- _fts_query: quote escaping (a broken escaper degrades to silent zero results,
+# since store.fts_search swallows sqlite3.OperationalError on malformed FTS5 syntax) ---
+
+def test_fts_query_escapes_internal_quotes():
+    result = _fts_query(['36" gauge'])
+    assert result == '"36"" gauge"'
+
+
+def test_search_handles_term_with_literal_quote(tmp_path):
+    """Integration-level: a broken escaper produces malformed FTS5 syntax, which
+    store.fts_search silently converts to an empty result list — this test would go
+    from green to a false '(no results)' rather than an obvious crash."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "q.db")
+    s.upsert("/g.jpg", "h1", 'a 36" gauge model railroad layout', fake_embedding(1), b"t")
+    with patch("needlestack.search._expand_query", return_value=['36" gauge']):
+        results = search('36" gauge', s, mock_embedder(1))
+    assert results
+    s.close()
+
+
+# --- score-merge weights: CLIP-only and FTS-only arms, and FTS_WEIGHT/CLIP_WEIGHT values ---
+# (Critical: dict.get(id, 0.0) defaults on both sides of the merge were completely
+# unpinned — a mutant default of 1.0, or a FTS_WEIGHT/CLIP_WEIGHT swap, survived the
+# full suite. This test pins both at once via two docs, each missing from one side.)
+
+def test_score_merge_pins_weights_and_missing_side_defaults(tmp_path):
+    from needlestack.store import Store
+    from needlestack.search import FTS_WEIGHT, CLIP_WEIGHT
+    s = Store(tmp_path / "merge.db")
+
+    query_vec = fake_embedding(1)
+    # clip_only.jpg: caption never matches "caboose" (FTS-absent) but its embedding
+    # is the query vector itself — the best-aligned of the two, so it normalizes to 1.0.
+    s.upsert("/clip_only.jpg", "h1", "nothing relevant in this caption", query_vec, b"t")
+    # fts_only.jpg: caption matches "caboose" (sole FTS hit -> tie-break norm 1.0), but
+    # its embedding is set to NULL after insert, so it's excluded from clip_scores
+    # entirely (all_embeddings() only selects WHERE embedding IS NOT NULL) — this is
+    # the real-world "captioned but embedding failed" row doctor.py already tracks.
+    off_axis = fake_embedding(2)
+    s.upsert("/fts_only.jpg", "h2", "a caboose at the yard", off_axis, b"t")
+    s.conn.execute("UPDATE images SET embedding = NULL WHERE path = '/fts_only.jpg'")
+    s.conn.commit()
+    s._embedding_cache = None
+
+    embedder = MagicMock()
+    embedder.embed_text.return_value = query_vec
+
+    with patch("needlestack.search.MIN_SCORE", 0.0):  # don't filter anything out
+        results = search("caboose", s, embedder, preexpanded_terms=["caboose"])
+
+    by_path = {r["path"]: r["score"] for r in results}
+    # clip_only: CLIP norm 1.0 (best-aligned, the only embedded doc) + FTS-absent default.
+    assert by_path["/clip_only.jpg"] == round(CLIP_WEIGHT * 1.0 + FTS_WEIGHT * 0.0, 4)
+    # fts_only: FTS norm 1.0 (sole match, tie-break) + CLIP-absent default (excluded row).
+    assert by_path["/fts_only.jpg"] == round(CLIP_WEIGHT * 0.0 + FTS_WEIGHT * 1.0, 4)
+    s.close()

@@ -85,19 +85,91 @@ class SearchRequest(BaseModel):
     all_domains: bool = False        # expand synonyms across all indexed domains
 
 
-@app.get("/setup", response_class=HTMLResponse)
-async def setup_page() -> str:
+class StartIndexRequest(BaseModel):
+    folder: str
+    domain: str = "railroad"
+
+
+def _run_indexing_loop(
+    roots: list[dict], store: Store, ollama_url: str, ollama_model: str, embedder: Embedder,
+) -> None:
+    """Caption+embed every root in `roots`, switching Captioner when the domain
+    changes. Shared by start_indexing and reindex_all so the setup-wizard flow and
+    the reindex flow can't silently diverge the way they previously did (two
+    separate copies of this loop, only one of which fast-failed consistently).
+
+    Raises on a captioner.check() failure or any exception from index_directory —
+    callers wrap this in their own try/except to set _index_state.error.
+    """
+    from needlestack_core.captioner import Captioner
+    from .indexer import index_directory
+
+    captioner: Captioner | None = None
+    current_domain_name: str | None = None
     try:
-        return (_ui_path / "setup.html").read_text()
+        for root_info in roots:
+            root = Path(root_info["path"])
+            domain_name = root_info["domain"]
+            if not root.exists():
+                continue
+
+            if domain_name != current_domain_name:
+                if captioner is not None:
+                    captioner.close()
+                selected_domain = taxonomy.resolve_domain(domain_name)
+                captioner = Captioner(model=ollama_model, base_url=ollama_url, domain=selected_domain)
+                # Fail fast and visibly if Ollama/the model isn't ready — otherwise
+                # index_directory swallows the per-image errors and the run looks
+                # "done" with everything failed and no explanation.
+                ok, msg = captioner.check()
+                if not ok:
+                    raise RuntimeError(msg)
+                current_domain_name = domain_name
+
+            def _progress(total, indexed, skipped, failed, current):
+                with _index_lock:
+                    _index_state.total = total
+                    _index_state.indexed = indexed
+                    _index_state.skipped = skipped
+                    _index_state.failed = failed
+                    _index_state.current = current
+
+            index_directory(root, store, captioner, embedder, on_progress=_progress)
+    finally:
+        if captioner is not None:
+            captioner.close()
+
+
+def _render_domain_options() -> str:
+    """Generate the setup wizard's <option> list from taxonomy.DOMAINS — the single
+    source of truth — instead of a hand-typed HTML list that can drift out of sync
+    with the registry (this is exactly how "motorsports" ended up missing from the
+    picker after being added to DOMAINS)."""
+    import html
+    return "\n".join(
+        f'        <option value="{html.escape(name)}">{html.escape(domain.display_label)}</option>'
+        for name, domain in taxonomy.DOMAINS.items()
+    )
+
+
+def _read_setup_html() -> str:
+    try:
+        text = (_ui_path / "setup.html").read_text()
     except FileNotFoundError as e:
         raise HTTPException(500, f"UI file missing: {e}")
+    return text.replace("<!-- DOMAIN_OPTIONS -->", _render_domain_options())
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page() -> str:
+    return _read_setup_html()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root() -> str:
+    if _setup_mode or _index_state.running or (_store is not None and _store.count() == 0 and not _index_state.done):
+        return _read_setup_html()
     try:
-        if _setup_mode or _index_state.running or (_store is not None and _store.count() == 0 and not _index_state.done):
-            return (_ui_path / "setup.html").read_text()
         return (_ui_path / "index.html").read_text()
     except FileNotFoundError as e:
         raise HTTPException(500, f"UI file missing: {e}")
@@ -132,21 +204,24 @@ async def browse_folder() -> dict:
             return {"error": "Folder picker not supported on this platform"}
 
         if not path:
-            # Distinguish user cancellation (non-zero exit) from empty selection (zero exit).
+            # On macOS/Windows, clicking Cancel makes the picker exit non-zero (e.g.
+            # osascript's "User canceled." AppleScript error -128) — that is the
+            # NORMAL cancellation path, not a failure. Empty output with a zero exit
+            # is the unexpected case (the dialog claimed success but gave no path).
             if result.returncode != 0:
-                return {"error": f"Folder picker failed (exit {result.returncode}): {result.stderr.strip()}"}
-            return {"cancelled": True}
+                return {"cancelled": True}
+            return {"error": "Folder picker returned no path unexpectedly (exit 0)"}
         return {"path": path}
     except Exception as e:
         return {"error": str(e)}
 
 
 @app.post("/api/setup/start")
-async def start_indexing(req: dict) -> dict:
+async def start_indexing(req: StartIndexRequest) -> dict:
     """Kick off indexing in a background thread."""
     global _store, _embedder, _setup_mode
 
-    folder = req.get("folder", "").strip()
+    folder = req.folder.strip()
     if not folder:
         raise HTTPException(400, "No folder provided")
 
@@ -156,7 +231,7 @@ async def start_indexing(req: dict) -> dict:
     if not root.is_dir():
         raise HTTPException(400, f"Not a directory: {folder}")
 
-    domain_name = req.get("domain", "railroad").strip()
+    domain_name = req.domain.strip()
     if domain_name not in taxonomy.DOMAINS:
         raise HTTPException(
             400,
@@ -184,46 +259,20 @@ async def start_indexing(req: dict) -> dict:
     def _run():
         global _store, _embedder, _setup_mode
         store = None
-        captioner = None
         try:
-            from needlestack_core.captioner import Captioner
-            from .indexer import index_directory
-
             _captured_db_path.parent.mkdir(parents=True, exist_ok=True)
             store = Store(_captured_db_path)
-            selected_domain = taxonomy.DOMAINS.get(_captured_domain_name, taxonomy.RAILROAD)
-            captioner = Captioner(
-                model=_captured_ollama_model,
-                base_url=_captured_ollama_url,
-                domain=selected_domain,
-            )
-
-            # Fail fast and visibly if Ollama/the model isn't ready — otherwise
-            # index_directory swallows the per-image errors and the run looks "done"
-            # with everything failed and no explanation (the CLI path check()s too).
-            ok, msg = captioner.check()
-            if not ok:
-                captioner.close()
-                store.close()
-                with _index_lock:
-                    _index_state.running = False
-                    _index_state.error = msg
-                return
-
             embedder = Embedder()
 
-            def _progress(total, indexed, skipped, failed, current):
-                with _index_lock:
-                    _index_state.total = total
-                    _index_state.indexed = indexed
-                    _index_state.skipped = skipped
-                    _index_state.failed = failed
-                    _index_state.current = current
-
-            index_directory(root, store, captioner, embedder, on_progress=_progress)
+            _run_indexing_loop(
+                [{"path": str(root), "domain": _captured_domain_name}],
+                store, _captured_ollama_url, _captured_ollama_model, embedder,
+            )
             store.add_root(str(root.resolve()), _captured_domain_name)
-            captioner.close()
-            captioner = None
+            # Record which model produced these captions — cli.py serve's default
+            # model then consults this instead of a hardcoded default, so a bare
+            # `needlestack serve` can't silently disagree with what was indexed.
+            store.set_config("last_indexed_model", _captured_ollama_model)
 
             # Publish globals and signal done atomically under the lock so any thread
             # that observes done=True is guaranteed to also see _store and _embedder set.
@@ -236,11 +285,6 @@ async def start_indexing(req: dict) -> dict:
                 _index_state.done = True
 
         except Exception as e:
-            if captioner is not None:
-                try:
-                    captioner.close()
-                except Exception:
-                    pass
             if store is not None:
                 try:
                     store.close()
@@ -284,7 +328,18 @@ async def sync_status() -> dict:
 
 @app.post("/api/reindex-all")
 async def reindex_all() -> dict:
-    """Re-index all stored roots in a background thread."""
+    """Re-index all stored roots in a background thread.
+
+    Writes go through a brand-new Store (its own sqlite connection) pointed at the
+    same db file, rather than the live `_store` — `_store`'s connection is
+    concurrently serving /search, /thumbnail, and /api/sync-status on other
+    threads/tasks, and Python's sqlite3 module does not guarantee safe concurrent
+    use of one Connection object across threads (only WAL's multiple-connections
+    model is; check_same_thread=False on `_store` is there only for the
+    setup-wizard's single-handoff case, not for concurrent read+write). WAL makes
+    the writer's commits visible to `_store` on its next read, but `_store`'s
+    in-process embedding cache needs an explicit invalidation, which happens below.
+    """
     if _store is None:
         raise HTTPException(503, "Index not ready")
     roots = _store.get_roots()
@@ -304,66 +359,36 @@ async def reindex_all() -> dict:
         _index_state.current = ""
 
     _captured_roots = list(roots)
-    _captured_store = _store
+    _captured_db_path = _db_path
     _captured_ollama_url_r = _ollama_url
     _captured_ollama_model_r = _ollama_model
 
     def _run_all():
         global _embedder
-        captioner = None
-        current_domain_name = None
+        writer_store = None
         try:
-            from needlestack_core.captioner import Captioner
-            from .indexer import index_directory
-
+            writer_store = Store(_captured_db_path)
             embedder = Embedder()
 
-            for root_info in _captured_roots:
-                root = Path(root_info["path"])
-                domain_name = root_info["domain"]
-                if not root.exists():
-                    continue
+            _run_indexing_loop(
+                _captured_roots, writer_store, _captured_ollama_url_r,
+                _captured_ollama_model_r, embedder,
+            )
+            writer_store.set_config("last_indexed_model", _captured_ollama_model_r)
+            writer_store.close()
+            writer_store = None
 
-                selected_domain = taxonomy.DOMAINS.get(domain_name, taxonomy.RAILROAD)
-                if domain_name != current_domain_name:
-                    if captioner is not None:
-                        captioner.close()
-                    captioner = Captioner(
-                        model=_captured_ollama_model_r,
-                        base_url=_captured_ollama_url_r,
-                        domain=selected_domain,
-                    )
-                    ok, msg = captioner.check()
-                    if not ok:
-                        captioner.close()
-                        with _index_lock:
-                            _index_state.running = False
-                            _index_state.error = msg
-                        return
-                    current_domain_name = domain_name
-
-                def _progress(total, indexed, skipped, failed, current):
-                    with _index_lock:
-                        _index_state.total = total
-                        _index_state.indexed = indexed
-                        _index_state.skipped = skipped
-                        _index_state.failed = failed
-                        _index_state.current = current
-
-                index_directory(root, _captured_store, captioner, embedder,
-                                on_progress=_progress)
-
-            if captioner is not None:
-                captioner.close()
-            _embedder = embedder
             with _index_lock:
+                _embedder = embedder
+                if _store is not None:
+                    _store.invalidate_embedding_cache()
                 _index_state.running = False
                 _index_state.done = True
 
         except Exception as e:
-            if captioner is not None:
+            if writer_store is not None:
                 try:
-                    captioner.close()
+                    writer_store.close()
                 except Exception:
                     pass
             with _index_lock:
@@ -390,33 +415,23 @@ async def index_progress() -> dict:
 
 
 def _primary_domain() -> taxonomy.Domain:
-    """Domain for query expansion: first stored root's domain, or railroad fallback."""
+    """Domain for query expansion: first stored root's domain, or railroad fallback.
+
+    Delegates to Store.primary_domain() — the single implementation of "unknown
+    domain name -> fall back to RAILROAD, logged" (see store.py's domains()) — so
+    this and _all_domains can't independently drift on that fallback the way the
+    three separate copies in this file previously could.
+    """
     if _store is None:
         return taxonomy.RAILROAD
-    roots = _store.get_roots()
-    name = roots[0]["domain"] if roots else (_store.get_config("indexed_domain") or "railroad")
-    return taxonomy.DOMAINS.get(name, taxonomy.RAILROAD)
+    return _store.primary_domain()
 
 
 def _all_domains() -> list[taxonomy.Domain]:
     """All distinct domains across indexed roots, preserving first-seen order."""
     if _store is None:
         return [taxonomy.RAILROAD]
-    roots = _store.get_roots()
-    seen: set[str] = set()
-    result: list[taxonomy.Domain] = []
-    for r in roots:
-        name = r["domain"]
-        if name not in seen:
-            seen.add(name)
-            if name not in taxonomy.DOMAINS:
-                _log.warning(
-                    "Unknown domain %r in index — falling back to railroad. "
-                    "Available domains: %s",
-                    name, ", ".join(taxonomy.DOMAINS),
-                )
-            result.append(taxonomy.DOMAINS.get(name, taxonomy.RAILROAD))
-    return result or [taxonomy.RAILROAD]
+    return _store.domains()
 
 
 def _resolve_domains(req: SearchRequest) -> list[taxonomy.Domain]:
@@ -425,11 +440,12 @@ def _resolve_domains(req: SearchRequest) -> list[taxonomy.Domain]:
 
 @app.post("/expand")
 async def expand(req: SearchRequest) -> dict:
-    from .search import _expand_query
+    from .search import expand_query_with_truncation
     domains = _resolve_domains(req)
-    terms = _expand_query(req.query, ollama_url=_ollama_url, model=_ollama_model,
-                          domains=domains)
-    return {"terms": terms}
+    terms, truncated = expand_query_with_truncation(
+        req.query, ollama_url=_ollama_url, model=_ollama_model, domains=domains
+    )
+    return {"terms": terms, "truncated": truncated}
 
 
 @app.post("/search")

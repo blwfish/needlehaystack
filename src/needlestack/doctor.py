@@ -98,6 +98,9 @@ def run(
         from .store import Store
         store = Store(db_path)
         try:
+            domains = store.domains()
+            _row(out, "Domain(s)", ", ".join(d.name for d in domains))
+
             count = store.count()
             _row(out, "Images indexed", str(count))
 
@@ -118,6 +121,12 @@ def run(
                 ).fetchone()[0]
                 _row(out, "Missing embeddings", str(no_embedding))
 
+                # Corrupt (non-NULL but undecodable) embeddings are neither "missing"
+                # above nor usable — invisible to every other diagnostic without this.
+                corrupt = store.count_corrupt_embeddings()
+                if corrupt:
+                    _row(out, "Corrupt embeddings", str(corrupt))
+
                 db_size_mb = db_path.stat().st_size / 1024 / 1024
                 _row(out, "Database size", f"{db_size_mb:.1f} MB")
 
@@ -130,16 +139,18 @@ def run(
                     out.write(f"\n  {Path(path).name}\n")
                     out.write(f"  {(caption or '').strip()[:300]}\n")
 
-                # Railroad vocabulary check (terms sourced from the single taxonomy)
-                _section(out, "Railroad vocabulary in captions")
-                from needlestack_core import taxonomy
-                terms = taxonomy.frequency_terms()
-                for term in terms:
-                    n = store.conn.execute(
-                        "SELECT COUNT(*) FROM images WHERE caption LIKE ?", (f"%{term}%",)
-                    ).fetchone()[0]
-                    bar = "█" * min(n, 40)
-                    out.write(f"  {term:<16} {n:>4}  {bar}\n")
+                # Vocabulary check, one section per domain actually indexed here
+                # (terms sourced from the single taxonomy) — previously hardcoded to
+                # RAILROAD regardless of what was actually indexed, which produced a
+                # misleading report (irrelevant vocabulary) for any other domain.
+                for domain in domains:
+                    _section(out, f"{domain.display_label} vocabulary in captions")
+                    for term in domain.frequency_terms():
+                        n = store.conn.execute(
+                            "SELECT COUNT(*) FROM images WHERE caption LIKE ?", (f"%{term}%",)
+                        ).fetchone()[0]
+                        bar = "█" * min(n, 40)
+                        out.write(f"  {term:<16} {n:>4}  {bar}\n")
 
             # --- query trace ---
             if query:
@@ -148,7 +159,8 @@ def run(
                 # Expansion
                 out.write("\n  Query expansion:\n")
                 try:
-                    terms = _expand_query(query, ollama_url=ollama_url, model=ollama_model)
+                    terms = _expand_query(query, ollama_url=ollama_url, model=ollama_model,
+                                          domains=domains)
                     for t in terms:
                         out.write(f"    • {t}\n")
                     fts_q = _fts_query(terms)

@@ -1,9 +1,14 @@
 import io
 import json as _json
+import logging
 import sqlite3
 from pathlib import Path
 
 import numpy as np
+
+from needlestack_core import taxonomy
+
+_log = logging.getLogger(__name__)
 
 # bm25 column weights for the multi-column FTS index: reporting marks (road numbers,
 # heralds, builder's plates) are the highest-value railfan search tokens, so they
@@ -11,7 +16,17 @@ import numpy as np
 FTS_COLUMN_WEIGHTS = (1.0, 8.0, 4.0)  # (caption, reporting_marks, equipment)
 
 # Bump when the on-disk schema changes; stamped into config by _migrate().
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+
+def _embedding_dim() -> int:
+    """Embedding vector width, sourced from Embedder.dim (a class attribute — no
+    model load required) so an empty result matrix always matches what the actual
+    embedder produces. Imported lazily: needlestack_core.embedder pulls in
+    torch/open_clip at module scope, and Store must stay importable/usable (e.g. by
+    doctor.py's no-query path) on a machine where those aren't installed."""
+    from needlestack_core.embedder import Embedder
+    return Embedder.dim
 
 # Columns added to `images` beyond the original set. Single source of truth: the
 # CREATE TABLE in SCHEMA and the ALTER TABLE migration loop are both generated from
@@ -23,6 +38,11 @@ _EXTRA_COLUMNS = {
     "is_railroad": "INTEGER",
     "caption_version": "TEXT",
     "view": "TEXT",
+    # Raw + normalized EXIF metadata as a JSON blob (see indexer._extract_exif) —
+    # LONGTEXT-equivalent (SQLite TEXT has no length cap) for an external, unbounded
+    # source. Nothing observed in the file's EXIF is dropped: recognized fields are
+    # promoted to named keys, everything else survives under "raw".
+    "exif_json": "TEXT",
 }
 _EXTRA_DDL = "".join(f",\n    {name} {decl}" for name, decl in _EXTRA_COLUMNS.items())
 
@@ -88,6 +108,17 @@ def _dec(blob: bytes) -> np.ndarray:
     return np.load(io.BytesIO(blob))
 
 
+def _try_dec(blob: bytes, path: str) -> np.ndarray | None:
+    """Decode an embedding BLOB, or None (logged) if it's corrupt. Single source of
+    truth for the decode-or-skip check shared by all_embeddings() and
+    count_corrupt_embeddings()."""
+    try:
+        return _dec(blob)
+    except (ValueError, OSError):
+        _log.warning("Corrupt embedding BLOB for %s — skipping", path)
+        return None
+
+
 class Store:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +162,13 @@ class Store:
             # re-captioned on the next index pass and the triggers refresh them.
             self.conn.execute("INSERT INTO captions_fts(captions_fts) VALUES('rebuild')")
 
+        stored_version = self.conn.execute(
+            "SELECT value FROM config WHERE key='schema_version'"
+        ).fetchone()
+        if stored_version is not None and stored_version[0] != str(SCHEMA_VERSION):
+            _log.info(
+                "Migrating index schema v%s -> v%s", stored_version[0], SCHEMA_VERSION
+            )
         self.conn.execute(
             "INSERT INTO config(key,value) VALUES('schema_version',?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -172,14 +210,16 @@ class Store:
         is_railroad: int = 0,
         caption_version: str = "",
         view: str = "",
+        exif_json: str = "",
     ) -> None:
         self.conn.execute(
             """
             INSERT INTO images (
                 path, hash, caption, reporting_marks, equipment,
-                structured_json, is_railroad, caption_version, view, embedding, thumbnail
+                structured_json, is_railroad, caption_version, view, exif_json,
+                embedding, thumbnail
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 hash=excluded.hash,
                 caption=excluded.caption,
@@ -189,15 +229,30 @@ class Store:
                 is_railroad=excluded.is_railroad,
                 caption_version=excluded.caption_version,
                 view=excluded.view,
+                exif_json=excluded.exif_json,
                 embedding=excluded.embedding,
                 thumbnail=excluded.thumbnail,
                 indexed_at=datetime('now')
             """,
             (path, hash_, caption, reporting_marks, equipment, structured_json,
-             int(is_railroad), caption_version, view, _enc(embedding), thumbnail),
+             int(is_railroad), caption_version, view, exif_json, _enc(embedding), thumbnail),
         )
         self.conn.commit()
-        self._embedding_cache = None  # invalidate on write
+        self.invalidate_embedding_cache()
+
+    def get_exif(self, path: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT exif_json FROM images WHERE path = ?", (path,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def invalidate_embedding_cache(self) -> None:
+        """Drop the cached embedding matrix. Needed whenever rows change through a
+        path this Store instance didn't itself write through — e.g. a reindex run
+        writing via a separate Store/connection pointed at the same db file (WAL
+        makes the new rows visible to this connection, but not to this instance's
+        in-process cache)."""
+        self._embedding_cache = None
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
@@ -217,26 +272,32 @@ class Store:
             "SELECT id, path, embedding FROM images WHERE embedding IS NOT NULL"
         ).fetchall()
         if not rows:
-            return [], [], np.empty((0, 512), dtype=np.float32)
+            return [], [], np.empty((0, _embedding_dim()), dtype=np.float32)
         ids = []
         paths = []
         vecs = []
         for r in rows:
-            try:
-                vecs.append(_dec(r[2]))
-            except (ValueError, OSError):
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Corrupt embedding BLOB for %s — skipping", r[1]
-                )
+            vec = _try_dec(r[2], r[1])
+            if vec is None:
                 continue
+            vecs.append(vec)
             ids.append(r[0])
             paths.append(r[1])
         if not ids:
-            return [], [], np.empty((0, 512), dtype=np.float32)
+            return [], [], np.empty((0, _embedding_dim()), dtype=np.float32)
         matrix = np.stack(vecs)
         self._embedding_cache = ids, paths, matrix
         return self._embedding_cache
+
+    def count_corrupt_embeddings(self) -> int:
+        """Count stored embeddings that fail to decode, without building the full
+        matrix — a lightweight check for the doctor health report. Corrupt rows are
+        neither NULL (so count_missing-style NULL checks miss them) nor usable, so
+        they'd otherwise be invisible to every diagnostic."""
+        rows = self.conn.execute(
+            "SELECT path, embedding FROM images WHERE embedding IS NOT NULL"
+        ).fetchall()
+        return sum(1 for path, blob in rows if _try_dec(blob, path) is None)
 
     def fts_search(self, query: str, limit: int = 100) -> list[tuple[int, str, float]]:
         try:
@@ -300,7 +361,7 @@ class Store:
             placeholders = ",".join("?" * len(missing_ids))
             self.conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", missing_ids)
             self.conn.commit()
-            self._embedding_cache = None  # deleted rows may be in the cache
+            self.invalidate_embedding_cache()  # deleted rows may be in the cache
         return len(missing_ids)
 
     def get_roots(self) -> list[dict]:
@@ -314,10 +375,7 @@ class Store:
             try:
                 return _json.loads(raw)
             except _json.JSONDecodeError:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "indexed_roots config is malformed JSON — treating as empty"
-                )
+                _log.warning("indexed_roots config is malformed JSON — treating as empty")
                 return []
         root = self.get_config("indexed_root")
         if root:
@@ -338,6 +396,29 @@ class Store:
                 return
         roots.append({"path": path, "domain": domain})
         self.set_roots(roots)
+
+    def domains(self) -> list[taxonomy.Domain]:
+        """All distinct domains across indexed roots, preserving first-seen order.
+
+        Delegates the "unrecognized domain name -> fall back to RAILROAD, logged"
+        decision to taxonomy.resolve_domain() — the single source of truth for that
+        fallback, so it can't drift out of sync between call sites the way it
+        previously did across server.py's _primary_domain, _all_domains, and
+        reindex_all (each re-implementing the same DOMAINS.get(..., RAILROAD)).
+        """
+        roots = self.get_roots()
+        seen: set[str] = set()
+        result: list[taxonomy.Domain] = []
+        for r in roots:
+            name = r["domain"]
+            if name not in seen:
+                seen.add(name)
+                result.append(taxonomy.resolve_domain(name))
+        return result or [taxonomy.RAILROAD]
+
+    def primary_domain(self) -> taxonomy.Domain:
+        """Domain for single-domain contexts: the first indexed root's domain."""
+        return self.domains()[0]
 
     def count_unindexed(self, root: Path) -> int:
         """Count image files in root that are not yet in the index."""

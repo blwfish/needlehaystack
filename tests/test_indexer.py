@@ -1,4 +1,5 @@
 import io
+import json as _json
 import pytest
 import numpy as np
 from pathlib import Path
@@ -126,6 +127,57 @@ def test_load_image_missing_file_raises(tmp_path):
         _load_image(tmp_path / "nonexistent.jpg")
 
 
+# --- _load_image RAW branch: half_size threshold (MAX_PIXELS), previously 0% covered ---
+
+def _mock_rawpy_context(raw_width: int, raw_height: int):
+    """A mock rawpy.imread(...) context manager reporting the given sensor
+    dimensions, whose postprocess() returns a tiny solid RGB array — exercises the
+    half_size threshold decision without needing a real RAW file or decoding."""
+    mock_raw = MagicMock()
+    mock_raw.sizes.raw_width = raw_width
+    mock_raw.sizes.raw_height = raw_height
+    mock_raw.postprocess.return_value = np.zeros((10, 10, 3), dtype=np.uint8)
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__.return_value = mock_raw
+    mock_ctx.__exit__.return_value = False
+    return mock_ctx, mock_raw
+
+
+def test_load_image_raw_below_max_pixels_no_half_size(tmp_path):
+    p = tmp_path / "small.cr2"
+    p.write_bytes(b"fake raw")
+    w, h = 5000, 4999
+    assert w * h < MAX_PIXELS
+    mock_ctx, mock_raw = _mock_rawpy_context(w, h)
+    with patch("needlestack.indexer.rawpy.imread", return_value=mock_ctx):
+        _load_image(p)
+    mock_raw.postprocess.assert_called_once_with(use_camera_wb=True, half_size=False)
+
+
+def test_load_image_raw_at_exact_max_pixels_no_half_size(tmp_path):
+    """Exactly at MAX_PIXELS must NOT trigger half_size — the comparison is strict
+    '>', not '>='."""
+    p = tmp_path / "exact.cr2"
+    p.write_bytes(b"fake raw")
+    w, h = 5000, 5000
+    assert w * h == MAX_PIXELS
+    mock_ctx, mock_raw = _mock_rawpy_context(w, h)
+    with patch("needlestack.indexer.rawpy.imread", return_value=mock_ctx):
+        _load_image(p)
+    mock_raw.postprocess.assert_called_once_with(use_camera_wb=True, half_size=False)
+
+
+def test_load_image_raw_above_max_pixels_uses_half_size(tmp_path):
+    p = tmp_path / "big.cr2"
+    p.write_bytes(b"fake raw")
+    w, h = 5001, 5000
+    assert w * h > MAX_PIXELS
+    mock_ctx, mock_raw = _mock_rawpy_context(w, h)
+    with patch("needlestack.indexer.rawpy.imread", return_value=mock_ctx):
+        _load_image(p)
+    mock_raw.postprocess.assert_called_once_with(use_camera_wb=True, half_size=True)
+
+
 def test_load_image_applies_exif_orientation(tmp_path):
     import io as _io
     p = tmp_path / "rotated.jpg"
@@ -195,6 +247,33 @@ def test_find_images_all_extensions(tmp_path):
 
 
 def test_find_images_empty_dir(tmp_path):
+    assert find_images(tmp_path) == []
+
+
+def test_find_images_skips_unreadable_subdirectory_without_aborting(tmp_path):
+    """A previously fatal case: root.rglob("*") raises PermissionError on the first
+    unreadable subdirectory and aborts the whole scan. os.walk's onerror callback
+    must log and continue, still finding images in siblings."""
+    import os as _os
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "a.jpg").write_bytes(b"")
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "hidden.jpg").write_bytes(b"")
+    _os.chmod(blocked, 0o000)
+    try:
+        result = find_images(tmp_path)
+        names = {p.name for p in result}
+        assert "a.jpg" in names
+    finally:
+        _os.chmod(blocked, 0o755)  # restore so pytest can clean up tmp_path
+
+
+def test_find_images_ignores_broken_symlink(tmp_path):
+    target = tmp_path / "does_not_exist.jpg"
+    link = tmp_path / "broken_link.jpg"
+    link.symlink_to(target)
     assert find_images(tmp_path) == []
 
 
@@ -390,4 +469,119 @@ def test_index_handles_unreadable_file(tmp_path):
     assert failed == 1
     assert indexed == 0
 
+    store.close()
+
+
+# --- _extract_exif / _json_safe / _dms_to_decimal ---
+
+from needlestack.indexer import _extract_exif, _json_safe, _dms_to_decimal  # noqa: E402
+
+
+def _make_jpeg_with_exif(path: Path, exif_tags: dict, gps_tags: dict | None = None) -> None:
+    img = Image.new("RGB", (50, 50), color=(10, 20, 30))
+    exif = img.getexif()
+    for tag_id, value in exif_tags.items():
+        exif[tag_id] = value
+    if gps_tags:
+        gps_ifd = exif.get_ifd(0x8825)
+        for tag_id, value in gps_tags.items():
+            gps_ifd[tag_id] = value
+        exif[0x8825] = gps_ifd  # Pillow only serializes a sub-IFD once reassigned
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif.tobytes())
+    path.write_bytes(buf.getvalue())
+
+
+def test_extract_exif_no_exif_returns_empty_string(tmp_path):
+    p = tmp_path / "plain.jpg"
+    Image.new("RGB", (10, 10)).save(p, format="JPEG")
+    assert _extract_exif(p) == ""
+
+
+def test_extract_exif_unreadable_file_returns_empty_and_does_not_raise(tmp_path):
+    p = tmp_path / "not_an_image.cr2"
+    p.write_bytes(b"this is not a real RAW file")
+    assert _extract_exif(p) == ""  # dropped-with-reason (logged at debug), not a crash
+
+
+def test_extract_exif_promotes_date_and_camera_fields(tmp_path):
+    p = tmp_path / "dated.jpg"
+    _make_jpeg_with_exif(p, {
+        0x9003: "2020:05:17 14:30:00",  # DateTimeOriginal
+        0x010F: "Canon",                # Make
+        0x0110: "EOS 90D",              # Model
+    })
+    data = _json.loads(_extract_exif(p))
+    assert data["date_taken"] == "2020:05:17 14:30:00"
+    assert data["make"] == "Canon"
+    assert data["model"] == "EOS 90D"
+    assert "raw" in data  # nothing dropped — full tag set preserved too
+
+
+def test_extract_exif_unmapped_tag_preserved_under_raw(tmp_path):
+    p = tmp_path / "misc.jpg"
+    _make_jpeg_with_exif(p, {0x927C: "some maker note data"})  # MakerNote — not promoted
+    data = _json.loads(_extract_exif(p))
+    assert "MakerNote" in data["raw"]
+
+
+def test_extract_exif_gps_converted_to_decimal(tmp_path):
+    p = tmp_path / "geo.jpg"
+    _make_jpeg_with_exif(
+        p, {0x9003: "2020:01:01 00:00:00"},
+        gps_tags={
+            1: "N", 2: (40.0, 26.0, 46.0),   # GPSLatitudeRef, GPSLatitude
+            3: "W", 4: (79.0, 58.0, 56.0),   # GPSLongitudeRef, GPSLongitude
+        },
+    )
+    data = _json.loads(_extract_exif(p))
+    assert data["gps_lat"] == pytest.approx(40.446111, abs=1e-4)
+    assert data["gps_lon"] == pytest.approx(-79.982222, abs=1e-4)
+
+
+def test_dms_to_decimal_north_east_positive():
+    assert _dms_to_decimal((10, 0, 0), "N") == pytest.approx(10.0)
+    assert _dms_to_decimal((10, 0, 0), "E") == pytest.approx(10.0)
+
+
+def test_dms_to_decimal_south_west_negative():
+    assert _dms_to_decimal((10, 0, 0), "S") == pytest.approx(-10.0)
+    assert _dms_to_decimal((10, 0, 0), "W") == pytest.approx(-10.0)
+
+
+def test_dms_to_decimal_invalid_input_returns_none():
+    assert _dms_to_decimal(("not", "a", "number"), "N") is None
+    assert _dms_to_decimal(None, "N") is None
+
+
+def test_json_safe_bytes_ascii_decodes():
+    assert _json_safe(b"ASCII\x00") == "ASCII"
+
+
+def test_json_safe_bytes_non_ascii_falls_back_to_hex():
+    assert _json_safe(b"\xff\xfe") == "fffe"
+
+
+def test_json_safe_ifdrational_like_becomes_float():
+    class _FakeRational:
+        numerator = 1
+        denominator = 2
+    assert _json_safe(_FakeRational()) == 0.5
+
+
+def test_json_safe_nested_tuple_becomes_list():
+    assert _json_safe((1, (2, 3), b"x")) == [1, [2, 3], "x"]
+
+
+def test_index_directory_stores_exif_json(tmp_path):
+    from needlestack.store import Store
+    img_path = tmp_path / "img" / "dated.jpg"
+    img_path.parent.mkdir()
+    _make_jpeg_with_exif(img_path, {0x9003: "2021:06:15 09:00:00"})
+
+    store = Store(tmp_path / "index.db")
+    index_directory(img_path.parent, store, make_captioner(), make_embedder())
+    exif = store.get_exif(str(img_path))
+    assert exif
+    assert _json.loads(exif)["date_taken"] == "2021:06:15 09:00:00"
     store.close()
