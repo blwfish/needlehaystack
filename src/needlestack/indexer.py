@@ -1,10 +1,12 @@
 import io
+import json as _json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 import rawpy
-from PIL import Image, ImageOps
+from PIL import ExifTags, Image, ImageOps
 
 _log = logging.getLogger(__name__)
 from rich.progress import (
@@ -85,11 +87,109 @@ def _thumbnail(image: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+_GPS_IFD_TAG = 0x8825  # EXIF tag id of the "GPSInfo" sub-IFD pointer
+
+
+def _json_safe(value):
+    """Recursively coerce an EXIF value into something json.dumps can serialize,
+    without dropping it: PIL's IFDRational -> float, bytes -> text (or hex if not
+    decodable), tuples -> lists, dict keys -> str. Everything else is passed
+    through, or str()'d as a last resort — no EXIF value is silently discarded."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if hasattr(value, "numerator") and hasattr(value, "denominator"):  # IFDRational
+        try:
+            return value.numerator / value.denominator
+        except (ZeroDivisionError, TypeError, ValueError):
+            return str(value)
+    if isinstance(value, bytes):
+        try:
+            return value.decode("ascii").rstrip("\x00")
+        except UnicodeDecodeError:
+            return value.hex()
+    if isinstance(value, (tuple, list)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return str(value)
+
+
+def _dms_to_decimal(dms, ref: str) -> float | None:
+    """Convert an EXIF GPS (degrees, minutes, seconds) tuple + hemisphere ref
+    ('N'/'S'/'E'/'W') to signed decimal degrees."""
+    try:
+        degrees, minutes, seconds = (float(v) for v in dms)
+    except (TypeError, ValueError):
+        return None
+    decimal = degrees + minutes / 60.0 + seconds / 3600.0
+    return -decimal if ref in ("S", "W") else decimal
+
+
+def _extract_exif(path: Path) -> str:
+    """Extract EXIF metadata as a JSON string, or "" if there's none / the format
+    isn't supported.
+
+    Disposition (Data-Capture Backward-Chaining Rule): every tag Pillow exposes is
+    preserved under "raw" (raw-only) or promoted to a named top-level key
+    (extracted: date_taken, gps_lat/lon, make, model, iso, f_number, exposure_time,
+    focal_length) — nothing is silently discarded. RAW camera formats are
+    dropped-with-reason: Pillow can't open most of them, so extraction is skipped
+    and logged rather than silently producing an empty result.
+    """
+    try:
+        with Image.open(path) as img:
+            exif = img.getexif()
+            if not exif:
+                return ""
+            raw = {ExifTags.TAGS.get(k, str(k)): _json_safe(v) for k, v in exif.items()}
+
+            gps_raw: dict = {}
+            try:
+                gps_ifd = exif.get_ifd(_GPS_IFD_TAG)
+                gps_raw = {ExifTags.GPSTAGS.get(k, str(k)): v for k, v in gps_ifd.items()}
+            except (KeyError, AttributeError):
+                pass
+            if gps_raw:
+                raw["GPS"] = _json_safe(gps_raw)
+
+            result: dict = {"raw": raw}
+            for src_key, out_key in (
+                ("DateTimeOriginal", "date_taken"), ("DateTime", "date_taken"),
+                ("Make", "make"), ("Model", "model"),
+                ("ISOSpeedRatings", "iso"), ("FNumber", "f_number"),
+                ("ExposureTime", "exposure_time"), ("FocalLength", "focal_length"),
+            ):
+                if out_key not in result and src_key in raw:
+                    result[out_key] = raw[src_key]
+
+            if gps_raw:
+                lat = _dms_to_decimal(gps_raw.get("GPSLatitude"), gps_raw.get("GPSLatitudeRef", ""))
+                lon = _dms_to_decimal(gps_raw.get("GPSLongitude"), gps_raw.get("GPSLongitudeRef", ""))
+                if lat is not None:
+                    result["gps_lat"] = lat
+                if lon is not None:
+                    result["gps_lon"] = lon
+
+            return _json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        _log.debug("EXIF extraction skipped for %s: %s", path.name, e)
+        return ""
+
+
 def find_images(root: Path) -> list[Path]:
-    return sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-    )
+    # os.walk with onerror logs-and-continues on a per-directory failure (permission
+    # denied, disappeared mid-walk, unreadable NAS mount point) instead of letting
+    # root.rglob("*") raise and abort the entire indexing run on one bad directory.
+    def _on_walk_error(err: OSError) -> None:
+        _log.warning("Skipping unreadable directory during scan: %s", err)
+
+    results: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=_on_walk_error):
+        for name in filenames:
+            p = Path(dirpath) / name
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
+                results.append(p)
+    return sorted(results)
 
 
 def index_directory(
@@ -148,6 +248,7 @@ def index_directory(
 
             try:
                 image = _load_image(path)
+                exif_json = _extract_exif(path)
                 result = captioner.caption(image, thorough=thorough)
                 # An empty caption means captioning failed (e.g. Ollama was unreachable
                 # and even the plain-text fallback returned nothing). Treat it as a
@@ -167,6 +268,7 @@ def index_directory(
                     is_railroad=int(result.is_railroad),
                     caption_version=version,
                     view=result.view,
+                    exif_json=exif_json,
                 )
                 indexed += 1
             except Exception as e:

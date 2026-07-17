@@ -74,6 +74,10 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
         directory, store, captioner, embedder, force=force, thorough=thorough
     )
     store.add_root(str(directory.resolve()), domain)
+    # Record which model produced these captions — `serve`'s default model consults
+    # this instead of a hardcoded default, so a bare `needlestack serve` afterward
+    # can't silently disagree with what was actually indexed.
+    store.set_config("last_indexed_model", resolved_model)
 
     console.print(
         f"\n[green]Done.[/green]  "
@@ -127,6 +131,10 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
     from .server import app, close as close_server, init
     from .store import Store
 
+    if model and preset:
+        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
+        sys.exit(1)
+
     db_path = Path(db)
     setup_mode = not db_path.exists()
 
@@ -146,7 +154,18 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
         console.print(f"[green]needlestack[/green]  {n} photos indexed")
         embedder = Embedder()
 
-    resolved_model = model or MODEL_PRESETS.get(preset or "", DEFAULT_MODEL)
+    if model:
+        resolved_model = model
+    elif preset:
+        resolved_model = MODEL_PRESETS.get(preset, DEFAULT_MODEL)
+    elif store is not None:
+        # No explicit choice: default to whatever model actually produced the
+        # stored captions, not a hardcoded default — otherwise a bare `needlestack
+        # serve` can silently disagree with what was indexed (false "outdated
+        # captions" banner, and a reindex would silently switch models).
+        resolved_model = store.get_config("last_indexed_model", DEFAULT_MODEL)
+    else:
+        resolved_model = DEFAULT_MODEL
     init(store, embedder, UI_PATH, db_path=db_path,
          ollama_url=ollama, ollama_model=resolved_model, setup_mode=setup_mode)
 

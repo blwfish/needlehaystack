@@ -187,6 +187,60 @@ def test_set_and_get_config(store):
     assert store.get_config("indexed_root") == "/photos"
 
 
+# --- domains() / primary_domain() ---
+
+def test_domains_empty_store_falls_back_to_railroad(store):
+    from needlestack_core import taxonomy
+    assert store.domains() == [taxonomy.RAILROAD]
+    assert store.primary_domain() == taxonomy.RAILROAD
+
+
+def test_domains_returns_distinct_domains_in_first_seen_order(store):
+    from needlestack_core import taxonomy
+    store.add_root("/a", "naval")
+    store.add_root("/b", "railroad")
+    store.add_root("/c", "naval")  # duplicate domain, different root
+    assert store.domains() == [taxonomy.NAVAL, taxonomy.RAILROAD]
+    assert store.primary_domain() == taxonomy.NAVAL
+
+
+def test_domains_unknown_name_falls_back_to_railroad_and_logs(store, caplog):
+    import logging
+    store.add_root("/a", "steampunk")  # not a real domain
+    from needlestack_core import taxonomy
+    # Logged by taxonomy.resolve_domain (the single source of truth for this
+    # fallback), not by needlestack.store — domains() delegates rather than
+    # re-implementing the check.
+    with caplog.at_level(logging.WARNING, logger="needlestack_core.taxonomy"):
+        result = store.domains()
+    assert result == [taxonomy.RAILROAD]
+    assert any("steampunk" in r.message for r in caplog.records)
+
+
+# --- count_corrupt_embeddings() ---
+
+def test_count_corrupt_embeddings_none_corrupt(store):
+    store.upsert("/a.jpg", "h1", "a caption", fake_embedding(1), b"t")
+    assert store.count_corrupt_embeddings() == 0
+
+
+def test_count_corrupt_embeddings_detects_corrupt_blob(store):
+    store.upsert("/a.jpg", "h1", "a caption", fake_embedding(1), b"t")
+    store.upsert("/b.jpg", "h2", "a caption", fake_embedding(2), b"t")
+    store.conn.execute("UPDATE images SET embedding = ? WHERE path = ?", (b"not-a-valid-npy-blob", "/a.jpg"))
+    store.conn.commit()
+    assert store.count_corrupt_embeddings() == 1
+
+
+def test_count_corrupt_embeddings_excludes_null(store):
+    """A NULL embedding (never indexed) is not 'corrupt' — it's simply absent."""
+    store.conn.execute(
+        "INSERT INTO images (path, hash, caption) VALUES ('/no-embed.jpg', 'h', 'c')"
+    )
+    store.conn.commit()
+    assert store.count_corrupt_embeddings() == 0
+
+
 def test_set_config_overwrites(store):
     store.set_config("key", "first")
     store.set_config("key", "second")
@@ -295,6 +349,16 @@ def test_upsert_roundtrips_structured_fields(store):
     assert store.get_caption_version("/a.jpg") == "m:v2"
 
 
+def test_upsert_roundtrips_exif_json(store):
+    store.upsert("/a.jpg", "h", "cap", fake_embedding(), b"t",
+                 exif_json='{"date_taken": "2020-01-01T00:00:00"}')
+    assert store.get_exif("/a.jpg") == '{"date_taken": "2020-01-01T00:00:00"}'
+
+
+def test_get_exif_missing(store):
+    assert store.get_exif("/nope.jpg") is None
+
+
 def test_get_caption_version_missing(store):
     assert store.get_caption_version("/nope.jpg") is None
 
@@ -367,7 +431,7 @@ def test_migrate_upgrades_old_db(tmp_path):
     s = Store(db)
     cols = {row[1] for row in s.conn.execute("PRAGMA table_info(images)")}
     assert {"reporting_marks", "equipment", "structured_json",
-            "is_railroad", "caption_version"} <= cols
+            "is_railroad", "caption_version", "view", "exif_json"} <= cols
 
     fts_cols = {row[1] for row in s.conn.execute("PRAGMA table_info(captions_fts)")}
     assert "reporting_marks" in fts_cols      # FTS widened to multi-column
@@ -388,3 +452,48 @@ def test_migrate_is_idempotent_on_fresh_db(store):
     store._migrate()  # should not raise or lose data
     assert store.count() == 1
     assert store.fts_search('"caboose"')
+
+
+def test_migrate_logs_schema_version_transition(tmp_path, caplog):
+    import logging
+    import sqlite3
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_OLD_SCHEMA)
+    conn.execute("INSERT INTO config (key, value) VALUES ('schema_version', '1')")
+    conn.commit()
+    conn.close()
+
+    from needlestack.store import SCHEMA_VERSION
+    with caplog.at_level(logging.INFO, logger="needlestack.store"):
+        s = Store(db)
+    assert any("v1" in r.message and f"v{SCHEMA_VERSION}" in r.message
+               for r in caplog.records)
+    s.close()
+
+
+def test_migrate_does_not_log_on_matching_version(store, caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="needlestack.store"):
+        store._migrate()  # fresh store is already at SCHEMA_VERSION
+    assert not any("Migrating index schema" in r.message for r in caplog.records)
+
+
+# --- FTS_COLUMN_WEIGHTS: caption vs equipment ordering (only marks-vs-caption was pinned) ---
+
+def test_fts_bm25_weights_equipment_above_caption(store):
+    """equipment (weight 4.0) must rank above plain caption prose (weight 1.0) when
+    the equipment column is the only match — pins the middle tier, not just the
+    marks-vs-caption edge (which the existing test above already covers)."""
+    # img A: the term appears buried in generic prose (low-weight caption column)
+    store.upsert(
+        "/prose.jpg", "h1", "a train rolls past lots of generic scenery and boxcar appears "
+        "amid many unrelated descriptive filler words here there everywhere",
+        fake_embedding(1), b"t",
+    )
+    # img B: the term is in the mid-weight equipment column
+    store.upsert("/equip.jpg", "h2", "a train", fake_embedding(2), b"t", equipment="boxcar")
+    rows = store.fts_search('"boxcar"')
+    # rank is negative BM25 (more negative = better match, per fts_search's own convention).
+    ranked_paths = [path for _id, path, _rank in sorted(rows, key=lambda r: r[2])]
+    assert ranked_paths[0] == "/equip.jpg"

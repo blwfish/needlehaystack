@@ -1,67 +1,54 @@
 # Testing notes — known gaps
 
-Status as of branch `strengthen-railroad-captions` (124 tests, ~60% line coverage).
+Status as of the 2026-07-17 full-review fix pass (220 tests).
 
-The suite is strong on pure logic (`store.py`, `taxonomy.py`, `constants.py` 100%;
-`search.py` 99%; `indexer.py` 94%; `captioner.py` 98%) and now covers the behavior
-added by the railroad-caption work (structured captioning, version-stale re-caption,
-weighted FTS, migration, sync-status stale reporting).
-
-The items below are **deliberately left undone** — each needs a real model, a real
-binary asset, a display/subprocess, or a thread harness, so none is a quick win.
-Ordered by tractability.
-
-## Tractable (no special hardware) — do these first
-
-- **`doctor.py` — 0% coverage.** No `tests/test_doctor.py` exists. `doctor.run()` is the
-  primary support/debugging tool and every error handler (Ollama unreachable, DB not
-  found, embedding failures, query-trace exceptions) is unexercised. Testable with a
-  temp DB + `patch("needlestack.doctor.httpx...")`. Highest value of the untested set.
-
-- **`cli.py` — 0% coverage.** No `tests/test_cli.py`. Cover with click's `CliRunner`,
-  mocking `Captioner`/`Store`/`Embedder`/`index_directory`. Priority paths:
-  - `index`: `captioner.check()` fails → `sys.exit(1)` (cli.py ~44-45)
-  - `serve`: port-in-use → reuse-or-find-next-free, no-free-port → exit (cli.py ~135-157)
-
-- **`search.py:108` — CLIP-only merge arm.** No test constructs a result that is in
-  `clip_scores` but NOT `fts_scores` (FTS matches nothing, CLIP still returns it). All
-  search tests surface results via FTS. Needs an embedder whose vector matches a doc the
-  FTS query misses.
-
-- **Server `sync_status` sub-branches** (server.py ~195, ~200): the `no indexed_root
-  config` and `root_missing` returns are still uncovered (the None-store and happy/stale
-  paths are tested).
+The suite now covers `doctor.py`, `cli.py`, `server.py`'s background indexing threads
+(`start_indexing`/`reindex_all` via the shared `_run_indexing_loop`), `browse_folder`,
+the RAW `half_size` threshold, the FTS/CLIP score-merge weights (including the
+previously-unpinned CLIP-only/FTS-only merge arms), and EXIF/GPS extraction —
+all previously 0% or unpinned. Ordered by remaining tractability.
 
 ## Needs a real asset or environment
 
-- **RAW image loading — `indexer.py:55-62` (0% of the rawpy branch).** The entire
-  `.nef/.cr2/.arw/...` path, including the `half_size` large-sensor decision, is
-  untested. Needs a small real RAW fixture committed to the repo (or a heavily mocked
-  `rawpy.imread`, which would test little). A broken rawpy import/API change is currently
-  invisible to CI.
-
-- **`embedder.py` — real model never loaded (44%, all consumers use `MagicMock`).** If
+- **`embedder.py` — real model never loaded (all consumers use `MagicMock`).** If
   the open_clip API, device selection (mps/cuda/cpu), or normalization breaks, no test
   catches it. Suggest one `@pytest.mark.slow` smoke test that loads the real model and
   asserts `embed_text`/`embed_image` shape + unit norm.
 
+- **RAW image *decoding* itself** (as opposed to the `half_size` threshold decision,
+  which is now tested via a mocked `rawpy.imread`) still has no real-file coverage.
+  A broken rawpy API change that doesn't affect the threshold math would still be
+  invisible to CI. Needs a small real RAW fixture committed to the repo.
+
 ## Needs thread / subprocess / display harnessing
 
-- **Server background index thread — the `_run` closure.** The whole setup-wizard
-  pipeline (Store/Captioner/Embedder construction, the `captioner.check()` early-exit,
-  `index_directory`, config write, mode switch to search, and the `except` that sets
-  `_index_state.error`) runs in an untested daemon thread.
-
-- **Server `browse_folder` — `server.py:84-111`.** Native folder-picker dispatch
-  (darwin/win32/other, cancelled dialog, exceptions) — entirely untested.
-
-- **Server `open`/`reveal` subprocess dispatch — `server.py:283-297`.** Only the 503/404
-  guards are tested; the actual `subprocess.Popen` per-platform branches are not. Also
-  the real-results + thumbnail-base64 encoding path in `/search` (server.py ~236-241)
-  and a 200 from `/thumbnail` are unexercised (test store is always empty).
+- **Server `open`/`reveal` subprocess dispatch — `server.py`'s `open_image`/
+  `reveal_image`.** Only the 503/404 guards (via `_resolve_image_path`) are tested;
+  the actual `subprocess.Popen`/`subprocess.run` per-platform branches (darwin/win32)
+  are not. Same shape as the `browse_folder` tests already added — platform-mocked via
+  `monkeypatch.setattr(sys, "platform", ...)` plus a patched `subprocess.Popen`.
 
 ## Resolved
 
-- ~~Server test isolation~~ — fixtures now reset module globals in teardown
+- ~~`doctor.py` — 0% coverage~~ — full `tests/test_doctor.py`, including domain
+  awareness, corrupt-embedding reporting, and the model-presence prefix-match branch.
+- ~~`cli.py` — 0% coverage~~ — `tests/test_cli.py` covers `index`/`doctor`/`serve`,
+  including the port-scan width boundary (at/below/above) and the `--model`/`--preset`
+  mutual exclusion on both `index` and `serve`.
+- ~~`search.py` CLIP-only merge arm~~ — pinned together with the FTS-only arm and the
+  FTS_WEIGHT/CLIP_WEIGHT values in one test (`test_score_merge_pins_weights_and_missing_side_defaults`),
+  since a doc missing from `clip_scores` or `fts_scores` needed a controlled fixture in
+  either direction.
+- ~~Server `sync_status` sub-branches~~ — store-present-zero-roots is covered
+  (`test_sync_status_store_present_zero_roots`); the None-store and happy/stale paths
+  were already tested.
+- ~~RAW image loading `half_size` threshold~~ — pinned at/below/above `MAX_PIXELS` via
+  a mocked `rawpy.imread` (full decoding still open, see above).
+- ~~Server background index thread~~ — `start_indexing`/`reindex_all` both now route
+  through the shared `_run_indexing_loop`, with parity, failure-path, and
+  connection-safety tests (`test_reindex_all_*`, `test_start_indexing_and_reindex_all_both_use_shared_loop`).
+- ~~Server `browse_folder`~~ — cancel-vs-error, success, and unsupported-platform paths
+  all covered.
+- ~~Server test isolation~~ — fixtures reset module globals in teardown
   (`_reset_server_globals`).
-- ~~Stale fixture strings~~ — fixtures now use `constants.DEFAULT_MODEL`/`OLLAMA_URL`.
+- ~~Stale fixture strings~~ — fixtures use `constants.DEFAULT_MODEL`/`OLLAMA_URL`.

@@ -92,6 +92,24 @@ def test_index_persists_domain_to_config(tmp_path):
     mock_store.add_root.assert_called_once_with(str(tmp_path.resolve()), "naval")
 
 
+def test_index_records_last_indexed_model(tmp_path):
+    r = runner()
+    mock_store = MagicMock()
+    mock_store.count.return_value = 0
+    with (
+        patch("needlestack_core.captioner.Captioner", return_value=_mock_captioner_ok()),
+        patch("needlestack.store.Store", return_value=mock_store),
+        patch("needlestack_core.embedder.Embedder", return_value=MagicMock()),
+        patch("needlestack.indexer.index_directory", return_value=(0, 0, 0)),
+    ):
+        result = r.invoke(
+            main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db"), "--preset", "quality"]
+        )
+    assert result.exit_code == 0
+    from needlestack_core.constants import MODEL_PRESETS
+    mock_store.set_config.assert_any_call("last_indexed_model", MODEL_PRESETS["quality"])
+
+
 def test_index_domain_naval_passes_naval_domain_to_captioner(tmp_path):
     r = runner()
     captured = []
@@ -254,3 +272,90 @@ def test_serve_no_free_port_exits_1(tmp_path):
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
     assert result.exit_code == 1
+
+
+def test_serve_scan_width_upper_edge_exactly_20_busy_fails(tmp_path):
+    """Base port + exactly the 20-candidate range (port+1..port+20) busy, port+21
+    free. Pins the upper edge: a widened scan (e.g. to port+25) would reach the
+    free port+21 and succeed instead of exiting 1."""
+    in_use = {8484} | set(range(8485, 8505))   # base + port+1..port+20 (20 candidates)
+    db_path, patches = _serve_patches(tmp_path, in_use_ports=in_use)
+    r = runner()
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
+    assert result.exit_code == 1
+
+
+def test_serve_scan_width_lower_edge_finds_port_plus_20(tmp_path):
+    """Base port + port+1..port+19 busy, port+20 free. Pins the lower edge: a
+    narrowed scan (e.g. only port+1..port+15) would never reach port+20 and would
+    exit 1 instead of succeeding there."""
+    in_use = {8484} | set(range(8485, 8504))   # base + port+1..port+19 (19 candidates)
+    db_path, patches = _serve_patches(tmp_path, in_use_ports=in_use)
+    r = runner()
+    with patches[0], patches[1], patches[2], patches[3] as mock_uvicorn, patches[4], patches[5]:
+        result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
+    assert result.exit_code == 0
+    assert mock_uvicorn.call_args.kwargs["port"] == 8504  # port+20
+
+
+# --- serve: --model/--preset mutual exclusion (same contract as `index`) ---
+
+def test_serve_model_and_preset_mutual_exclusion(tmp_path):
+    db_path = tmp_path / "index.db"  # need not exist — check runs before any I/O
+    r = runner()
+    result = r.invoke(main, ["serve", "--db", str(db_path), "--model", "x", "--preset", "fast"])
+    assert result.exit_code == 1
+    assert "mutually exclusive" in result.output
+
+
+# --- serve: default model consults last_indexed_model (caption-model tracking) ---
+
+def test_serve_defaults_to_last_indexed_model_when_no_model_or_preset(tmp_path):
+    db_path = tmp_path / "index.db"
+    s = Store(db_path)
+    s.set_config("last_indexed_model", "qwen2.5vl:7b")
+    s.close()
+    sock_factory = _mock_socket_factory(set())
+    r = runner()
+    with patch("socket.socket", side_effect=sock_factory), \
+         patch("needlestack_core.embedder.Embedder", return_value=MagicMock()), \
+         patch("needlestack.server.init") as mock_init, \
+         patch("uvicorn.run"), patch("webbrowser.open"), \
+         patch("httpx.get", side_effect=Exception("no")):
+        result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
+    assert result.exit_code == 0
+    assert mock_init.call_args.kwargs["ollama_model"] == "qwen2.5vl:7b"
+
+
+def test_serve_falls_back_to_default_model_when_no_last_indexed_model(tmp_path):
+    db_path = tmp_path / "index.db"
+    Store(db_path).close()
+    sock_factory = _mock_socket_factory(set())
+    r = runner()
+    with patch("socket.socket", side_effect=sock_factory), \
+         patch("needlestack_core.embedder.Embedder", return_value=MagicMock()), \
+         patch("needlestack.server.init") as mock_init, \
+         patch("uvicorn.run"), patch("webbrowser.open"), \
+         patch("httpx.get", side_effect=Exception("no")):
+        result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
+    from needlestack_core.constants import DEFAULT_MODEL
+    assert mock_init.call_args.kwargs["ollama_model"] == DEFAULT_MODEL
+
+
+def test_serve_explicit_model_overrides_last_indexed_model(tmp_path):
+    db_path = tmp_path / "index.db"
+    s = Store(db_path)
+    s.set_config("last_indexed_model", "qwen2.5vl:7b")
+    s.close()
+    sock_factory = _mock_socket_factory(set())
+    r = runner()
+    with patch("socket.socket", side_effect=sock_factory), \
+         patch("needlestack_core.embedder.Embedder", return_value=MagicMock()), \
+         patch("needlestack.server.init") as mock_init, \
+         patch("uvicorn.run"), patch("webbrowser.open"), \
+         patch("httpx.get", side_effect=Exception("no")):
+        result = r.invoke(
+            main, ["serve", "--db", str(db_path), "--no-browser", "--model", "other:model"]
+        )
+    assert mock_init.call_args.kwargs["ollama_model"] == "other:model"
