@@ -25,8 +25,14 @@ def runner():
 # ---------------------------------------------------------------------------
 
 def _mock_captioner_ok():
+    from needlestack_core.captioner import CaptionStats
     m = MagicMock()
     m.check.return_value = (True, "ok")
+    # A real CaptionStats, not an auto-mocked attribute: MagicMock's numeric magic
+    # methods (__float__ etc.) satisfy old-style %-formatting but not the f-string
+    # :.1f format spec cli.py uses for the captioning-stats line, which needs a
+    # real dataclass to format without raising.
+    m.stats = CaptionStats()
     return m
 
 
@@ -73,6 +79,34 @@ def test_index_happy_path_reports_counts(tmp_path):
     assert "indexed: 7" in result.output
     assert "skipped: 3" in result.output
     assert "failed: 1" in result.output
+
+
+def test_index_prints_captioning_stats_when_calls_made(tmp_path):
+    from needlestack_core.captioner import CaptionStats
+    r = runner()
+    cap = _mock_captioner_ok()
+    cap.stats = CaptionStats(calls=5, total_duration_ns=10_000_000_000,
+                             total_eval_count=250, total_eval_duration_ns=5_000_000_000)
+    patches = _index_patches(captioner=cap, indexed=5, skipped=0, failed=0)
+    with patches[0], patches[1], patches[2], patches[3]:
+        result = r.invoke(main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db")])
+    assert result.exit_code == 0
+    assert "2.0s/call" in result.output
+    assert "5 calls" in result.output
+    assert "50.0 tok/s" in result.output
+
+
+def test_index_no_stats_line_when_no_captioning_happened(tmp_path):
+    """All files already indexed (skipped) -> nothing was captioned -> no stats line."""
+    from needlestack_core.captioner import CaptionStats
+    r = runner()
+    cap = _mock_captioner_ok()
+    cap.stats = CaptionStats()  # zero calls
+    patches = _index_patches(captioner=cap, indexed=0, skipped=5, failed=0)
+    with patches[0], patches[1], patches[2], patches[3]:
+        result = r.invoke(main, ["index", str(tmp_path), "--db", str(tmp_path / "i.db")])
+    assert result.exit_code == 0
+    assert "s/call" not in result.output
 
 
 def test_index_persists_domain_to_config(tmp_path):

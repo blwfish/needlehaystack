@@ -83,8 +83,15 @@ def run(
             timeout=30.0,
         )
         resp.raise_for_status()
-        response_text = resp.json().get("response", "").strip()
+        data = resp.json()
+        response_text = data.get("response", "").strip()
         _row(out, "Test inference", f"OK — model replied: {response_text[:40]!r}")
+        # total_duration is real measured latency for this call — not a substitute
+        # for per-photo captioning cost (this prompt is trivial and has no image),
+        # but a live data point where previously none was reported at all.
+        total_duration_ns = data.get("total_duration")
+        if total_duration_ns:
+            _row(out, "  Test inference latency", f"{total_duration_ns / 1e9:.2f}s (trivial text prompt)")
     except Exception as e:
         _row(out, "Test inference", f"FAILED — {e}")
 

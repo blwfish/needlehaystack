@@ -51,7 +51,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wheel-0.47.0-pyhd8ed1ab_0.conda
       - pypi: ./
-      - pypi: git+https://github.com/blwfish/needlestack-core?rev=68b1dc9645da7d93440ba1c926ee56e9ea0bc15b#68b1dc9645da7d93440ba1c926ee56e9ea0bc15b
+      - pypi: git+https://github.com/blwfish/needlestack-core?rev=674dd107534f14c3581162e94e5f7318fa4800c4#674dd107534f14c3581162e94e5f7318fa4800c4
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/05/6b/32f747947df2da6994e999492ab306a903659555dddc0fbdeb9d71f75e52/nvidia_cuda_nvrtc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl
@@ -139,7 +139,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/readline-8.3-h68b038d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/tk-8.6.13-h7142dee_3.conda
       - pypi: ./
-      - pypi: git+https://github.com/blwfish/needlestack-core?rev=68b1dc9645da7d93440ba1c926ee56e9ea0bc15b#68b1dc9645da7d93440ba1c926ee56e9ea0bc15b
+      - pypi: git+https://github.com/blwfish/needlestack-core?rev=674dd107534f14c3581162e94e5f7318fa4800c4#674dd107534f14c3581162e94e5f7318fa4800c4
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/05/cb/0353013dc30c02a8be34eb91d25e4e4cf594b59e5a55ea1128fde1e5f8ea/pillow-10.4.0-cp312-cp312-macosx_10_10_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl
@@ -208,7 +208,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/readline-8.3-h46df422_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tk-8.6.13-h010d191_3.conda
       - pypi: ./
-      - pypi: git+https://github.com/blwfish/needlestack-core?rev=68b1dc9645da7d93440ba1c926ee56e9ea0bc15b#68b1dc9645da7d93440ba1c926ee56e9ea0bc15b
+      - pypi: git+https://github.com/blwfish/needlestack-core?rev=674dd107534f14c3581162e94e5f7318fa4800c4#674dd107534f14c3581162e94e5f7318fa4800c4
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0b/d7/1959b9648791274998a9c3526f6d0ec8fd2233e4d4acce81bbae76b44b2a/python_dotenv-1.2.2-py3-none-any.whl
@@ -843,7 +843,7 @@ packages:
 - pypi: ./
   name: needlestack
   requires_dist:
-  - needlestack-core @ git+https://github.com/blwfish/needlestack-core@68b1dc9645da7d93440ba1c926ee56e9ea0bc15b
+  - needlestack-core @ git+https://github.com/blwfish/needlestack-core@674dd107534f14c3581162e94e5f7318fa4800c4
   - pillow>=10.0.0,<11
   - rawpy>=0.18.0
   - rich>=13.0.0,<14
@@ -853,7 +853,7 @@ packages:
   - pytest>=8.0 ; extra == 'test'
   - pytest-cov>=5.0 ; extra == 'test'
   requires_python: '>=3.12'
-- pypi: git+https://github.com/blwfish/needlestack-core?rev=68b1dc9645da7d93440ba1c926ee56e9ea0bc15b#68b1dc9645da7d93440ba1c926ee56e9ea0bc15b
+- pypi: git+https://github.com/blwfish/needlestack-core?rev=674dd107534f14c3581162e94e5f7318fa4800c4#674dd107534f14c3581162e94e5f7318fa4800c4
   name: needlestack-core
   version: 0.1.0
   requires_dist:
