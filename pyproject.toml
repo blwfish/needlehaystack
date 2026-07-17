@@ -4,7 +4,7 @@ version = "0.3.1"
 description = "Find photos by describing what's in them"
 requires-python = ">=3.12"
 dependencies = [
-    "needlestack-core @ git+https://github.com/blwfish/needlestack-core@68b1dc9645da7d93440ba1c926ee56e9ea0bc15b",
+    "needlestack-core @ git+https://github.com/blwfish/needlestack-core@674dd107534f14c3581162e94e5f7318fa4800c4",
     "Pillow>=10.0.0,<11",
     "rawpy>=0.18.0",
     "rich>=13.0.0,<14",

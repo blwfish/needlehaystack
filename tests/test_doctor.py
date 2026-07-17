@@ -173,6 +173,32 @@ def test_test_inference_ok(tmp_path):
     assert "FAILED" not in report.split("Test inference")[1][:50]
 
 
+def test_test_inference_reports_measured_latency_when_present(tmp_path):
+    tags = _tags_resp(["qwen2.5vl:7b"])
+    gen = MagicMock()
+    gen.raise_for_status.return_value = None
+    gen.json.return_value = {"response": "OK", "total_duration": 1_500_000_000}
+    with (
+        patch("httpx.get", return_value=tags),
+        patch("httpx.post", return_value=gen),
+    ):
+        report = run(db_path=tmp_path / "missing.db", ollama_model="qwen2.5vl:7b")
+    assert "Test inference latency" in report
+    assert "1.50s" in report
+
+
+def test_test_inference_no_latency_row_when_absent(tmp_path):
+    """Older Ollama responses (or the mocked-in-most-other-tests shape) that omit
+    total_duration must not crash and must not print a misleading 0.00s row."""
+    tags, gen = _ollama_ok(["qwen2.5vl:7b"], reply="OK")
+    with (
+        patch("httpx.get", return_value=tags),
+        patch("httpx.post", return_value=gen),
+    ):
+        report = run(db_path=tmp_path / "missing.db", ollama_model="qwen2.5vl:7b")
+    assert "Test inference latency" not in report
+
+
 def test_test_inference_failure(tmp_path):
     tags = _tags_resp(["qwen2.5vl:7b"])
     with (

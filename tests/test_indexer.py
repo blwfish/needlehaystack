@@ -585,3 +585,45 @@ def test_index_directory_stores_exif_json(tmp_path):
     assert exif
     assert _json.loads(exif)["date_taken"] == "2021:06:15 09:00:00"
     store.close()
+
+
+# --- index_directory: captioner.stats summary logging ---
+
+def test_index_directory_logs_captioning_stats_when_calls_made(tmp_path, caplog):
+    import logging
+    from needlestack.store import Store
+    from needlestack_core.captioner import CaptionStats
+    img_path = tmp_path / "img" / "a.jpg"
+    img_path.parent.mkdir()
+    make_test_image(img_path)
+
+    store = Store(tmp_path / "index.db")
+    captioner = make_captioner()
+    captioner.stats = CaptionStats(calls=1, total_duration_ns=2_000_000_000,
+                                   total_eval_count=50, total_eval_duration_ns=1_000_000_000)
+    with caplog.at_level(logging.INFO, logger="needlestack.indexer"):
+        index_directory(img_path.parent, store, captioner, make_embedder())
+    assert any("Captioning:" in r.message and "2.0" in r.message for r in caplog.records)
+    store.close()
+
+
+def test_index_directory_no_stats_log_when_no_captioning_happened(tmp_path, caplog):
+    """All files skipped (already indexed) -> captioner.stats.calls stays 0 ->
+    no misleading '0 calls, 0.0s/call' log line."""
+    import logging
+    from needlestack.store import Store
+    from needlestack_core.captioner import CaptionStats
+    img_path = tmp_path / "img" / "a.jpg"
+    img_path.parent.mkdir()
+    make_test_image(img_path)
+
+    store = Store(tmp_path / "index.db")
+    captioner = make_captioner()
+    captioner.stats = CaptionStats()  # zero calls
+    index_directory(img_path.parent, store, captioner, make_embedder())  # first pass indexes it
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="needlestack.indexer"):
+        # second pass: same hash/version -> skipped, no new captioner calls
+        index_directory(img_path.parent, store, captioner, make_embedder())
+    assert not any("Captioning:" in r.message for r in caplog.records)
+    store.close()

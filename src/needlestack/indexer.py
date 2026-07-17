@@ -290,4 +290,14 @@ def index_directory(
     else:
         _run()
 
+    # captioner.stats is real measured throughput (Ollama's own per-request
+    # telemetry), replacing the hardcoded tier-speed guesses in constants.py —
+    # only log it if any captioning actually happened this run.
+    if captioner.stats.calls:
+        _log.info(
+            "Captioning: %d calls, %.1fs/call avg, %.1f tok/s",
+            captioner.stats.calls, captioner.stats.avg_seconds_per_call,
+            captioner.stats.tokens_per_second,
+        )
+
     return indexed, skipped, failed

@@ -83,6 +83,11 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
         f"\n[green]Done.[/green]  "
         f"indexed: {indexed}  skipped: {skipped}  failed: {failed}"
     )
+    if captioner.stats.calls:
+        console.print(
+            f"  captioning: [cyan]{captioner.stats.avg_seconds_per_call:.1f}s/call[/cyan]  "
+            f"({captioner.stats.calls} calls, {captioner.stats.tokens_per_second:.1f} tok/s)"
+        )
     store.close()
     captioner.close()
 
