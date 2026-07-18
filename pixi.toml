@@ -15,3 +15,6 @@ needlestack = { path = ".", editable = true }
 install = "pip install -e '.[test]'"
 serve = "needlestack serve"
 test = "python -m pytest"
+# Release-gate cadence only, not part of `test` above — coverage is a
+# floor-check, not a quality gate.
+test-cov = "python -m pytest --cov --cov-report=term-missing"

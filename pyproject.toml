@@ -40,3 +40,16 @@ addopts = "-v --tb=short"
 markers = [
     "integration: requires Ollama running locally and network access (deselect with -m 'not integration')",
 ]
+
+# pytest-cov was already a declared dev dependency but never configured or
+# invoked. Coverage is a floor-check, not a quality gate — deliberately not
+# wired into the default addopts above; invoke explicitly at release-gate
+# cadence via `pixi run test-cov`. /full-review's Phase 3.5 detects this
+# config and runs it the same way.
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+skip_empty = true
