@@ -293,24 +293,46 @@ fi
 DEVICE=$(echo "$SMOKE_OUTPUT" | grep -o 'device=[^ ]*' | cut -d= -f2)
 green "All components verified (using $DEVICE)"
 
-# --- launcher ---
+# --- app bundle ---
 
-step "Creating launcher"
+step "Installing app"
 
-LAUNCHER="$SCRIPT_DIR/Start Needlestack.command"
+APP_NAME="Needlestack"
+if [[ -w "/Applications" ]]; then
+    APPS_DIR="/Applications"
+else
+    APPS_DIR="$HOME/Applications"
+    mkdir -p "$APPS_DIR"
+fi
+APP_BUNDLE="$APPS_DIR/$APP_NAME.app"
+
+rm -rf "$APP_BUNDLE"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+
+VERSION=$(grep -m1 '^version' "$SCRIPT_DIR/pyproject.toml" | sed -E 's/.*"([^"]+)".*/\1/')
+sed "s/__VERSION__/${VERSION:-0.0.0}/g" "$SCRIPT_DIR/resources/macos/Info.plist" > "$APP_BUNDLE/Contents/Info.plist"
+cp "$SCRIPT_DIR/resources/macos/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+LAUNCHER="$APP_BUNDLE/Contents/MacOS/needlestack-launcher"
 cat > "$LAUNCHER" << LAUNCHER_EOF
 #!/bin/bash
-SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+# needlestack's Python/pixi environment lives where it was installed, not
+# inside this app bundle — this path is baked in at install time.
+INSTALL_DIR="$SCRIPT_DIR"
 LOG_DIR="\$HOME/.needlestack"
 LOG_FILE="\$LOG_DIR/needlestack.log"
 mkdir -p "\$LOG_DIR"
 echo "=== needlestack started \$(date) ===" >> "\$LOG_FILE"
 exec > >(tee -a "\$LOG_FILE") 2>&1
 
-cd "\$SCRIPT_DIR"
+cd "\$INSTALL_DIR"
 export PATH="\$HOME/.pixi/bin:\$PATH"
 
 PORT=8484
+
+dialog() {
+    osascript -e "display dialog \"\$1\" with title \"Needlestack\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1
+}
 
 # If needlestack is already running on the port, just open the browser
 if lsof -i ":\$PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
@@ -331,26 +353,49 @@ if ! curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
 fi
 
 if ! curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
-    echo ""
     echo "Ollama does not appear to be running."
-    echo "Please open the Ollama app and try again."
-    read -r -p "Press Enter to close..."
+    dialog "Ollama does not appear to be running. Please open the Ollama app and try again."
     exit 1
 fi
 
-# Run and catch crashes
-if ! pixi run needlestack serve; then
-    echo ""
-    echo "needlestack exited unexpectedly."
-    echo "If this keeps happening, send this log to whoever gave you needlestack:"
-    echo "\$LOG_FILE"
-    echo ""
-    read -r -p "Press Enter to close..."
-    exit 1
-fi
+# There's no Terminal window in a double-clicked .app, so pop the browser
+# tab ourselves once the server has had a moment to bind the port.
+(sleep 2 && open "http://localhost:\$PORT") &
+
+# exec replaces this script with the server process itself, so quitting
+# the app from the Dock (or Cmd+Q) sends its signal straight to the
+# server instead of orphaning it — there's no wrapper process left to
+# catch a later crash, but the log file still captures it.
+exec pixi run needlestack serve
+dialog "needlestack could not start. If this keeps happening, send this log to whoever gave you needlestack: \$LOG_FILE"
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
-green "Created 'Start Needlestack.command'"
+
+# A locally-built bundle shouldn't carry quarantine flags, but the icon we
+# just copied came from a possibly-downloaded checkout — strip defensively
+# so Gatekeeper doesn't report the app as "damaged."
+xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+
+# Ad-hoc sign so a corrupted/missing signature never triggers Gatekeeper's
+# "app is damaged" dialog (e.g. if quarantine gets reapplied later by
+# cloud sync or AV scanning). This does NOT grant Apple's trusted/notarized
+# status — that requires a paid Developer ID — so the first-launch
+# "unidentified developer" prompt (see GUIDE.md) is still expected.
+if command -v codesign &>/dev/null; then
+    if codesign --deep --force -s - "$APP_BUNDLE" 2>>"$LOG_FILE"; then
+        green "App signed (ad-hoc)"
+    else
+        warn "Ad-hoc signing failed — app may show extra Gatekeeper warnings"
+    fi
+else
+    warn "codesign not found — app may show extra Gatekeeper warnings"
+fi
+
+# Refresh Launch Services so Spotlight/Launchpad see the app immediately
+# instead of waiting for their next periodic scan.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" >/dev/null 2>&1 || true
+
+green "Installed 'Needlestack' to $APPS_DIR"
 
 # --- done ---
 
@@ -371,8 +416,8 @@ echo "    pixi run needlestack index /path/to/your/photos"
 echo ""
 echo "  Step 2 — Search:"
 echo ""
-echo "    Double-click 'Start Needlestack.command' in Finder"
-echo "    (Right-click → Open the first time to allow it)"
+echo "    Open 'Needlestack' from Launchpad or Spotlight (⌘-Space, type Needlestack)"
+echo "    (Right-click → Open the first time to allow it — it's not signed)"
 echo ""
 echo "  Install log saved to: $LOG_FILE"
 echo ""
