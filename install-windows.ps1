@@ -429,6 +429,30 @@ if errorlevel 1 (
 Set-Content -Path $launcherPath -Value $launcherContent -Encoding ASCII
 Ok "Created 'Start Needlestack.bat'"
 
+# --- start menu shortcut ---
+
+Step "Adding Start Menu shortcut"
+
+$iconPath = Join-Path $SCRIPT_DIR "resources\windows\AppIcon.ico"
+$startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+$shortcutPath = Join-Path $startMenuDir "Needlestack.lnk"
+
+try {
+    $WshShell = New-Object -ComObject WScript.Shell
+    $shortcut = $WshShell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $launcherPath
+    $shortcut.WorkingDirectory = $SCRIPT_DIR
+    $shortcut.Description = "Find your photos by describing what's in them"
+    if (Test-Path $iconPath) {
+        $shortcut.IconLocation = $iconPath
+    }
+    $shortcut.Save()
+    Ok "Added 'Needlestack' to the Start Menu"
+} catch {
+    Warn "Could not create Start Menu shortcut: $_"
+    Warn "You can still launch needlestack from 'Start Needlestack.bat' in $SCRIPT_DIR"
+}
+
 # --- done ---
 
 Stop-Transcript | Out-Null
@@ -438,6 +462,10 @@ Write-Host "══════════════════════�
 Write-Host "  Installation complete!" -ForegroundColor White
 Write-Host "════════════════════════════════════════════════════"
 Write-Host ""
+Write-Host "  !   Do not move this folder after installing."
+Write-Host "      The Start Menu shortcut expects needlestack to stay here:"
+Write-Host "      $SCRIPT_DIR"
+Write-Host ""
 Write-Host "  Step 1 — Index your photos (run once, takes an hour or two):"
 Write-Host ""
 Write-Host "    Open a terminal in this folder and run:"
@@ -445,7 +473,7 @@ Write-Host "    pixi run needlestack index C:\path\to\your\photos"
 Write-Host ""
 Write-Host "  Step 2 — Search:"
 Write-Host ""
-Write-Host "    Double-click 'Start Needlestack.bat' in File Explorer"
+Write-Host "    Press the Windows key, type 'Needlestack', and press Enter"
 Write-Host "    (Click 'More info' then 'Run anyway' if Windows warns you)"
 Write-Host ""
 Write-Host "  Install log saved to: $LOG_FILE"

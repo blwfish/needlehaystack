@@ -80,9 +80,10 @@ just run the same command again. It picks up where it left off.
 
 ## Searching
 
-Double-click **Start Needlestack.command** in the needlestack-main folder.
-The first time, macOS will warn you — right-click it and choose **Open**,
-then click **Open** in the dialog. If macOS has already blocked it, open
+Open **Needlestack** from Launchpad, or search for it with Spotlight
+(⌘-Space, type "Needlestack"). The first time, macOS will warn you because
+it's not signed — right-click it and choose **Open**, then click **Open**
+in the dialog. If macOS has already blocked it, open
 **System Settings → Privacy & Security**, scroll to the bottom, and click
 **Open Anyway**.
 
