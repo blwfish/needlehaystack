@@ -41,10 +41,11 @@ disconnect from the internet after installation and everything will still work.
 1. Download needlestack from GitHub — click the green **Code** button, then
    **Download ZIP**
 2. Unzip it — your Mac will do this automatically if you double-click the file
-3. A folder called **needlestack-main** will appear in your Downloads.
-   Move it somewhere you won't accidentally delete it — your home folder or
-   Documents are good choices. **Do not move it after installing.**
-4. Open the **needlestack-main** folder and double-click **install-mac.sh**
+3. A folder will appear in your Downloads (its name won't matter for long —
+   see the next step). Move it to your home folder or Documents — somewhere
+   you won't accidentally delete it — and rename it to **needlestack**.
+   **Do not move or rename it again after installing.**
+4. Open the **needlestack** folder and double-click **install-mac.sh**
 5. If macOS says it can't open the file because it's from an unidentified
    developer, try right-clicking it and choosing **Open**, then click **Open**
    again in the dialog that appears. If macOS has already blocked it, open
@@ -66,7 +67,7 @@ you add more photos.
 Open Terminal, then type (replacing the path with your actual photos folder):
 
 ```
-cd ~/needlestack-main
+cd ~/needlestack
 pixi run needlestack index ~/Pictures/MyPhotos
 ```
 
@@ -143,11 +144,11 @@ Make sure Ollama is running — look for the Ollama icon in your menu bar
 Run this command in Terminal to generate a diagnostic report:
 
 ```
-cd ~/needlestack-main
+cd ~/needlestack
 pixi run needlestack doctor --out report.txt
 ```
 
-This creates a file called **report.txt** in the needlestack-main folder.
+This creates a file called **report.txt** in the needlestack folder.
 Send that file to whoever gave you needlestack and they can figure out
 what went wrong.
 
@@ -170,7 +171,7 @@ photos it has already seen and only process the new ones.
 If something isn't working and you can't figure it out from the above, run:
 
 ```
-cd ~/needlestack-main
+cd ~/needlestack
 pixi run needlestack doctor --out report.txt
 ```
 
@@ -182,7 +183,7 @@ no need to describe what you were doing or what the screen said.
 
 ## Uninstalling
 
-1. Delete the **needlestack-main** folder
+1. Delete the **needlestack** folder
 2. Delete **~/.needlestack** (this is the photo index — hidden folder in your
    home directory, find it in Terminal with `rm -rf ~/.needlestack`)
 3. Ollama can be uninstalled separately from your Applications folder if you
