@@ -25,7 +25,10 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True, path_type=Path),
+)
 @click.option("--db", default=str(DEFAULT_DB), show_default=True, help="Index database path")
 @click.option("--model", default=None, help="Ollama vision model (overrides --preset)")
 @click.option("--preset", default=None,

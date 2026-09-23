@@ -126,16 +126,30 @@ def _dms_to_decimal(dms, ref: str) -> float | None:
 
 
 def _extract_exif(path: Path) -> str:
-    """Extract EXIF metadata as a JSON string, or "" if there's none / the format
-    isn't supported.
+    """Extract EXIF metadata as a JSON string, or "" if there's none.
 
     Disposition (Data-Capture Backward-Chaining Rule): every tag Pillow exposes is
     preserved under "raw" (raw-only) or promoted to a named top-level key
     (extracted: date_taken, gps_lat/lon, make, model, iso, f_number, exposure_time,
-    focal_length) — nothing is silently discarded. RAW camera formats are
-    dropped-with-reason: Pillow can't open most of them, so extraction is skipped
-    and logged rather than silently producing an empty result.
+    focal_length) — nothing is silently discarded.
+
+    RAW camera formats are dropped-with-reason, explicitly: Pillow cannot open them
+    at all, and rawpy (used elsewhere in this module for RAW pixel data) does not
+    expose EXIF either, so extraction is never attempted for them. This returns a
+    distinct {"unsupported_format": true} marker rather than "" specifically so a
+    RAW file's metadata gap is never confused with "this file genuinely has no
+    EXIF" (a real, valid outcome for non-RAW files) — the two used to be
+    indistinguishable, which silently discarded RAW metadata for every RAW file
+    indexed while reporting each one as a normal success.
     """
+    if path.suffix.lower() in RAW_EXTENSIONS:
+        _log.info(
+            "EXIF extraction not supported for RAW format %s: %s", path.suffix, path.name
+        )
+        return _json.dumps({
+            "unsupported_format": True,
+            "reason": "RAW formats are not supported for EXIF extraction",
+        })
     try:
         with Image.open(path) as img:
             exif = img.getexif()
@@ -172,8 +186,12 @@ def _extract_exif(path: Path) -> str:
 
             return _json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        _log.debug("EXIF extraction skipped for %s: %s", path.name, e)
-        return ""
+        # Distinct {"extraction_failed": true} marker, not "" -- a real failure
+        # (corrupt file, unsupported non-RAW format, permission error) must not be
+        # indistinguishable from "this file genuinely has no EXIF tags," which is
+        # also a valid, common outcome for non-RAW files.
+        _log.warning("EXIF extraction failed for %s: %s", path.name, e)
+        return _json.dumps({"extraction_failed": True, "error": str(e)})
 
 
 def find_images(root: Path) -> list[Path]:

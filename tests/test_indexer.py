@@ -498,10 +498,18 @@ def test_extract_exif_no_exif_returns_empty_string(tmp_path):
     assert _extract_exif(p) == ""
 
 
-def test_extract_exif_unreadable_file_returns_empty_and_does_not_raise(tmp_path):
-    p = tmp_path / "not_an_image.cr2"
-    p.write_bytes(b"this is not a real RAW file")
-    assert _extract_exif(p) == ""  # dropped-with-reason (logged at debug), not a crash
+def test_extract_exif_unreadable_file_does_not_raise(tmp_path):
+    p = tmp_path / "not_an_image.jpg"
+    p.write_bytes(b"this is not a real image")
+    assert _extract_exif(p) != ""  # distinguishable from "no EXIF", not a crash
+    assert _json.loads(_extract_exif(p)).get("extraction_failed") is True
+
+
+def test_extract_exif_raw_format_returns_unsupported_marker(tmp_path):
+    p = tmp_path / "photo.cr2"
+    p.write_bytes(b"not a real RAW file, content is irrelevant, extension alone gates this")
+    data = _json.loads(_extract_exif(p))
+    assert data["unsupported_format"] is True
 
 
 def test_extract_exif_promotes_date_and_camera_fields(tmp_path):

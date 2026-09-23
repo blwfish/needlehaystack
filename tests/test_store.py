@@ -274,6 +274,16 @@ def test_remove_missing_empty_index(store):
     assert store.remove_missing() == 0
 
 
+def test_remove_missing_does_not_delete_unverifiable_relative_paths(store):
+    """A relative stored path (only possible from a pre-fix database -- indexing
+    now always stores absolute paths) can't be safely judged missing from an
+    arbitrary process cwd, so it must never be silently deleted."""
+    store.upsert("relative/ghost.jpg", "h1", "caption", fake_embedding(), b"t")
+    assert store.count_missing() == 0
+    assert store.remove_missing() == 0
+    assert store.count() == 1
+
+
 # --- count_unindexed ---
 
 def test_count_unindexed_finds_new_files(store, tmp_path):

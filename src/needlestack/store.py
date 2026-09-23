@@ -348,15 +348,31 @@ class Store:
         )
         self.conn.commit()
 
+    @staticmethod
+    def _is_verifiably_missing(path: str) -> bool:
+        """True only if `path` is absolute AND doesn't exist.
+
+        A relative stored path can't be safely judged "missing" -- it would be
+        resolved against whatever the *current* process's cwd happens to be,
+        which has no guaranteed relationship to the cwd `needlestack index` was
+        run from. Indexing now always stores absolute paths (see cli.py's
+        `resolve_path=True`), so this only matters for rows written before that
+        fix; treating an unverifiable relative path as "present" rather than
+        "missing" means a stale cwd can never cause files to be silently and
+        permanently deleted from the index.
+        """
+        p = Path(path)
+        return p.is_absolute() and not p.exists()
+
     def count_missing(self) -> int:
         """Count indexed entries whose files no longer exist, without deleting them."""
         rows = self.conn.execute("SELECT path FROM images").fetchall()
-        return sum(1 for (path,) in rows if not Path(path).exists())
+        return sum(1 for (path,) in rows if self._is_verifiably_missing(path))
 
     def remove_missing(self) -> int:
         """Delete index entries whose files no longer exist. Returns count removed."""
         paths = self.conn.execute("SELECT id, path FROM images").fetchall()
-        missing_ids = [row[0] for row in paths if not Path(row[1]).exists()]
+        missing_ids = [row[0] for row in paths if self._is_verifiably_missing(row[1])]
         if missing_ids:
             placeholders = ",".join("?" * len(missing_ids))
             self.conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", missing_ids)
