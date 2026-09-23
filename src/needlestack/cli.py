@@ -18,6 +18,15 @@ UI_PATH = Path(__file__).parent / "ui"
 console = Console()
 
 
+def _check_model_preset_exclusive(model: str | None, preset: str | None) -> None:
+    """--model and --preset are mutually exclusive; shared by `index` and `serve`
+    so the check (and its message) can't drift between the two commands the way
+    two hand-copied checks previously could."""
+    if model and preset:
+        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
+        sys.exit(1)
+
+
 @click.group()
 @click.version_option(package_name="needlestack")
 def main() -> None:
@@ -49,9 +58,7 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
     from .store import Store
     from needlestack_core.taxonomy import get_domain
 
-    if model and preset:
-        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
-        sys.exit(1)
+    _check_model_preset_exclusive(model, preset)
     resolved_model = model or MODEL_PRESETS.get(preset or "", DEFAULT_MODEL)
     selected_domain = get_domain(domain)
     captioner = Captioner(model=resolved_model, base_url=ollama, domain=selected_domain)
@@ -139,9 +146,7 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
     from .server import app, close as close_server, init
     from .store import Store
 
-    if model and preset:
-        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
-        sys.exit(1)
+    _check_model_preset_exclusive(model, preset)
 
     db_path = Path(db)
     setup_mode = not db_path.exists()

@@ -308,7 +308,11 @@ async def sync_status() -> dict:
     if not roots:
         return {"new": 0, "removed": 0, "roots": []}
     from needlestack_core.constants import caption_version
-    stale = store.count_stale_captions(caption_version(_ollama_model))
+    # count_stale_captions compares every row's version against one string, which
+    # is only precise for the common single-domain-per-database case; a genuinely
+    # multi-domain database's stale count was already an approximation before
+    # domain was added to the version string, and remains one here.
+    stale = store.count_stale_captions(caption_version(_ollama_model, _primary_domain().name))
     existing_roots = [Path(r["path"]) for r in roots if Path(r["path"]).exists()]
 
     def _count_new() -> int:
@@ -333,12 +337,15 @@ async def reindex_all() -> dict:
     Writes go through a brand-new Store (its own sqlite connection) pointed at the
     same db file, rather than the live `_store` — `_store`'s connection is
     concurrently serving /search, /thumbnail, and /api/sync-status on other
-    threads/tasks, and Python's sqlite3 module does not guarantee safe concurrent
-    use of one Connection object across threads (only WAL's multiple-connections
-    model is; check_same_thread=False on `_store` is there only for the
-    setup-wizard's single-handoff case, not for concurrent read+write). WAL makes
-    the writer's commits visible to `_store` on its next read, but `_store`'s
-    in-process embedding cache needs an explicit invalidation, which happens below.
+    threads/tasks. Store.__init__ verifies sqlite3.threadsafety == 3 (SQLite
+    compiled "serialized"), which does make concurrent *reads* across threads on
+    one shared Connection object safe — but this writer still uses its own
+    separate connection rather than relying on that for a concurrent *write*: it
+    keeps `_store`'s connection single-writer (only ever written by the thread
+    that constructed it), which is what WAL's documented multi-connection commit
+    visibility guarantee actually assumes. WAL makes the writer's commits visible
+    to `_store` on its next read, but `_store`'s in-process embedding cache needs
+    an explicit invalidation, which happens below.
     """
     if _store is None:
         raise HTTPException(503, "Index not ready")

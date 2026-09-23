@@ -184,6 +184,30 @@ def test_search_results_ordered_by_score(populated_store):
     assert scores == sorted(scores, reverse=True)
 
 
+def test_min_score_rejects_weak_best_of_a_bad_lot_clip_match(tmp_path):
+    """Regression: min-max normalization used to rescale the single best-scoring
+    CLIP candidate to exactly 1.0 on every non-tied query, so CLIP_WEIGHT*1.0=0.40
+    always exceeded MIN_SCORE=0.38 regardless of how weak the actual cosine
+    similarity was. A query with no textual match and only weak visual similarity
+    to every indexed photo must now be excluded, not returned just because it was
+    relatively the "best of a bad lot"."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "weak.db")
+    # Two docs whose embeddings are unrelated to the query vector (near-orthogonal
+    # random unit vectors in 512-d space) and whose captions never match the query
+    # text, so FTS contributes nothing and only CLIP is in play.
+    s.upsert("/a.jpg", "h1", "nothing relevant here", fake_embedding(10), b"t")
+    s.upsert("/b.jpg", "h2", "nothing relevant here either", fake_embedding(11), b"t")
+
+    embedder = MagicMock()
+    embedder.embed_text.return_value = fake_embedding(99)  # unrelated to both docs
+
+    with patch("needlestack.search._expand_query", return_value=["zzz_no_match_zzz"]):
+        results = search("zzz_no_match_zzz", s, embedder)
+    assert results == []
+    s.close()
+
+
 # --- MIN_SCORE boundary: >= not > ---
 
 def test_min_score_boundary_is_gte_not_gt(tmp_path):

@@ -333,9 +333,10 @@ def test_sync_status_no_stale_when_current(client_with_store, tmp_path):
     root.mkdir()
     store.set_config("indexed_root", str(root))
     from needlestack_core.constants import caption_version
+    from needlestack_core import taxonomy
     store.upsert(
         str(root / "a.jpg"), "h", "a fresh caption", np.zeros(512, dtype=np.float32),
-        b"t", caption_version=caption_version(srv._ollama_model),
+        b"t", caption_version=caption_version(srv._ollama_model, taxonomy.RAILROAD.name),
     )
     resp = client.get("/api/sync-status")
     assert resp.json()["stale"] == 0

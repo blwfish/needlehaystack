@@ -109,14 +109,25 @@ def expand_query_with_truncation(
 
 
 def _normalize_clip(raw: np.ndarray) -> np.ndarray:
-    """Min-max normalize CLIP cosine scores to [0, 1].
+    """Clip raw CLIP cosine similarities to [0, 1] so MIN_SCORE reflects genuine
+    match quality rather than a per-query, corpus-relative rank.
 
-    Tied case (all equal, including single-image index) maps to 1.0 so a lone
-    result clears MIN_SCORE (CLIP_WEIGHT × 1.0 = 0.40 > 0.38).
+    Tied case (all scores equal, including a single-image index) is the one
+    exception: there's no discriminating signal to rank by, so it maps to 1.0 —
+    a lone candidate clears MIN_SCORE (CLIP_WEIGHT × 1.0 = 0.40 > 0.38) instead
+    of being arbitrarily excluded for lack of a runner-up to compare against.
+
+    Previously this used full min-max normalization ((raw - min) / (max - min))
+    for every query, not just the tied case — which meant the single
+    best-scoring candidate was ALWAYS rescaled to exactly 1.0, on every search,
+    regardless of how weak its actual cosine similarity was. Combined with
+    CLIP_WEIGHT × 1.0 = 0.40 > MIN_SCORE = 0.38, that meant the best-of-a-bad-lot
+    image always cleared the "no good match" floor — for any query, including
+    ones with zero genuinely relevant results.
     """
     mn, mx = raw.min(), raw.max()
     if mx > mn:
-        return (raw - mn) / (mx - mn)
+        return np.clip(raw, 0.0, 1.0)
     return np.full_like(raw, 1.0)
 
 

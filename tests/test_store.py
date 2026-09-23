@@ -20,6 +20,17 @@ def fake_embedding(seed: int = 0) -> np.ndarray:
 
 # --- embedding codec ---
 
+def test_store_init_rejects_unsafe_sqlite_threadsafety(tmp_path, monkeypatch):
+    """Store shares one Connection (check_same_thread=False) across threads --
+    safe only when SQLite was compiled 'serialized' (threadsafety==3). This must
+    be verified at construction time, not assumed, since it depends on how the
+    platform's SQLite library was built."""
+    import sqlite3
+    monkeypatch.setattr(sqlite3, "threadsafety", 1)
+    with pytest.raises(RuntimeError, match="threadsafety"):
+        Store(tmp_path / "unsafe.db")
+
+
 def test_embedding_roundtrip():
     arr = fake_embedding()
     assert np.allclose(arr, _dec(_enc(arr)), atol=1e-6)

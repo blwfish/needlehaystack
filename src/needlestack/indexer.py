@@ -24,9 +24,10 @@ from .store import Store
 
 
 def current_caption_version(captioner: Captioner) -> str:
-    """Identity of the captioning pipeline. Changing the model or the prompt schema
-    changes this string, which auto-invalidates older captions on the next index."""
-    return caption_version(captioner.model)
+    """Identity of the captioning pipeline. Changing the model, the prompt schema,
+    or the domain changes this string, which auto-invalidates older captions on
+    the next index."""
+    return caption_version(captioner.model, captioner.domain.name)
 
 RAW_EXTENSIONS = {
     ".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".raf", ".dng", ".pef",

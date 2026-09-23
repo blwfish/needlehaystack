@@ -122,9 +122,29 @@ def _try_dec(blob: bytes, path: str) -> np.ndarray | None:
 class Store:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False: WAL mode is safe for concurrent reads from
-        # multiple threads; the background indexing thread hands the Store to
-        # the uvicorn thread after indexing completes.
+        # check_same_thread=False: server.py's /search and /thumbnail run on the
+        # event-loop thread while /api/sync-status offloads count_missing() to a
+        # separate worker thread via asyncio.to_thread -- both genuinely touch
+        # this same Connection object from different OS threads, concurrently.
+        # This is safe ONLY because sqlite3.threadsafety == 3 (SQLite compiled
+        # "serialized": the C library itself is safe for concurrent multi-thread
+        # use of one connection) -- verified below rather than assumed, since
+        # that depends on how the platform's SQLite library was built and isn't
+        # guaranteed across all Python/SQLite distributions. It covers concurrent
+        # *reads* only: server.py deliberately never writes through this shared
+        # connection from a background thread -- reindex_all/start_indexing open
+        # their own separate writer Store/connection instead, so this connection
+        # only ever has one writer (the main thread that constructed it) and
+        # WAL's documented multi-connection model handles that writer's commits
+        # becoming visible to this connection's next read.
+        if sqlite3.threadsafety < 3:
+            raise RuntimeError(
+                "needlestack requires a SQLite library compiled in 'serialized' "
+                "threading mode (sqlite3.threadsafety == 3) because the Store "
+                "connection is shared read-only across threads; this Python's "
+                f"sqlite3 module reports threadsafety={sqlite3.threadsafety}, "
+                "which cannot safely support that."
+            )
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)

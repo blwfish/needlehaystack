@@ -331,10 +331,12 @@ def test_thumbnail_respects_max_size():
 
 # --- index_directory skip logic ---
 
-def make_captioner():
+def make_captioner(domain=None):
     from needlestack_core.captioner import CaptionResult
+    from needlestack_core import taxonomy
     c = MagicMock()
     c.model = "test-model"
+    c.domain = domain if domain is not None else taxonomy.RAILROAD
     c.caption.return_value = CaptionResult(
         caption="a steam locomotive on the mainline",
         description="a steam locomotive on the mainline",
@@ -376,6 +378,37 @@ def test_index_skips_already_indexed(tmp_path):
     indexed2, skipped2, failed2 = index_directory(img_path.parent, store, captioner, embedder)
     assert indexed2 == 0
     assert skipped2 == 1
+
+    store.close()
+
+
+def test_index_domain_change_forces_recaption(tmp_path):
+    """Regression: caption_version previously omitted domain, so re-indexing a
+    directory under a different --domain (without --force) silently skipped
+    re-captioning -- the skip-check only compared hash + model:schema, both
+    unchanged by a domain switch, leaving old-domain structured fields in place
+    under a database that now reports the new domain for that root."""
+    from needlestack.store import Store
+    from needlestack_core import taxonomy
+    img_path = tmp_path / "img" / "test.jpg"
+    img_path.parent.mkdir()
+    make_test_image(img_path)
+
+    store = Store(tmp_path / "index.db")
+    embedder = make_embedder()
+
+    indexed, skipped, _ = index_directory(
+        img_path.parent, store, make_captioner(domain=taxonomy.RAILROAD), embedder
+    )
+    assert indexed == 1
+    assert skipped == 0
+
+    # Same file, same model, different domain, no --force: must re-caption, not skip.
+    indexed2, skipped2, _ = index_directory(
+        img_path.parent, store, make_captioner(domain=taxonomy.NAVAL), embedder
+    )
+    assert indexed2 == 1
+    assert skipped2 == 0
 
     store.close()
 
