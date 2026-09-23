@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import search as search_module
 from needlestack_core import taxonomy
@@ -40,10 +40,26 @@ class _IndexState:
     skipped: int = 0
     failed: int = 0
     current: str = ""
+    skipped_roots: int = 0  # configured roots that no longer exist on disk
 
 
 _index_state = _IndexState()
 _index_lock = threading.Lock()
+
+
+def _reset_index_state() -> None:
+    """Reset _index_state for a new run. Caller must hold _index_lock. Shared by
+    start_indexing and reindex_all so the reset can't independently drift the
+    way two hand-copied copies of this same block previously could."""
+    _index_state.running = True
+    _index_state.done = False
+    _index_state.error = ""
+    _index_state.total = 0
+    _index_state.indexed = 0
+    _index_state.skipped = 0
+    _index_state.failed = 0
+    _index_state.current = ""
+    _index_state.skipped_roots = 0
 
 
 def init(
@@ -79,14 +95,19 @@ def close() -> None:
 
 
 class SearchRequest(BaseModel):
-    query: str
-    limit: int = 40
-    terms: list[str] | None = None  # pre-expanded terms, skips expansion if provided
+    # Bounds on client-supplied HTTP body fields: a search query, its expansion
+    # terms, and the result limit were previously unbounded strings/lists/ints
+    # accepted straight into store.fts_search/search.search with no validation
+    # (a negative limit hits SQLite's "negative LIMIT = unlimited" semantics; an
+    # unbounded terms list is unbounded work building the FTS OR query).
+    query: str = Field(max_length=500)
+    limit: int = Field(default=40, gt=0, le=500)
+    terms: list[str] | None = Field(default=None, max_length=50)  # pre-expanded terms
     all_domains: bool = False        # expand synonyms across all indexed domains
 
 
 class StartIndexRequest(BaseModel):
-    folder: str
+    folder: str = Field(max_length=4096)
     domain: str = "railroad"
 
 
@@ -106,11 +127,17 @@ def _run_indexing_loop(
 
     captioner: Captioner | None = None
     current_domain_name: str | None = None
+    skipped_roots = 0
     try:
         for root_info in roots:
             root = Path(root_info["path"])
             domain_name = root_info["domain"]
             if not root.exists():
+                skipped_roots += 1
+                _log.warning(
+                    "Skipping configured root that no longer exists: %s (domain=%s)",
+                    root, domain_name,
+                )
                 continue
 
             if domain_name != current_domain_name:
@@ -123,7 +150,7 @@ def _run_indexing_loop(
                 # "done" with everything failed and no explanation.
                 ok, msg = captioner.check()
                 if not ok:
-                    raise RuntimeError(msg)
+                    raise RuntimeError(f"{msg} (root: {root}, domain: {domain_name})")
                 current_domain_name = domain_name
 
             def _progress(total, indexed, skipped, failed, current):
@@ -134,7 +161,13 @@ def _run_indexing_loop(
                     _index_state.failed = failed
                     _index_state.current = current
 
-            index_directory(root, store, captioner, embedder, on_progress=_progress)
+            try:
+                index_directory(root, store, captioner, embedder, on_progress=_progress)
+            except Exception as e:
+                raise RuntimeError(f"{e} (root: {root}, domain: {domain_name})") from e
+        if skipped_roots:
+            with _index_lock:
+                _index_state.skipped_roots = skipped_roots
     finally:
         if captioner is not None:
             captioner.close()
@@ -158,6 +191,15 @@ def _read_setup_html() -> str:
     except FileNotFoundError as e:
         raise HTTPException(500, f"UI file missing: {e}")
     return text.replace("<!-- DOMAIN_OPTIONS -->", _render_domain_options())
+
+
+@app.get("/api/health")
+async def health() -> dict:
+    """Typed identity signal for cli.py's "is this port already running
+    needlestack" check -- previously that check inferred the answer by
+    substring-matching the rendered "/" HTML page, an unstructured signal from
+    a producer (this same app) fully capable of emitting a typed one instead."""
+    return {"app": "needlestack"}
 
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -189,11 +231,17 @@ async def browse_folder() -> dict:
             )
             path = result.stdout.strip()
         elif sys.platform == "win32":
+            # Exit 1 on Cancel/closed-without-selecting, matching macOS's
+            # non-zero-exit-on-cancel convention below -- previously this only
+            # wrote SelectedPath on 'OK' and otherwise exited 0 with empty
+            # stdout, which the shared "returncode != 0 means cancelled" check
+            # below couldn't distinguish from a normal cancel, misreporting
+            # every Windows cancel as the "unexpected empty output" error case.
             script = (
                 "Add-Type -AssemblyName System.Windows.Forms;"
                 "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
                 "$d.Description = 'Select your photos folder';"
-                "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }"
+                "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath } else { exit 1 }"
             )
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", script],
@@ -241,14 +289,7 @@ async def start_indexing(req: StartIndexRequest) -> dict:
     with _index_lock:
         if _index_state.running:
             return {"status": "already_running"}
-        _index_state.running = True
-        _index_state.done = False
-        _index_state.error = ""
-        _index_state.total = 0
-        _index_state.indexed = 0
-        _index_state.skipped = 0
-        _index_state.failed = 0
-        _index_state.current = ""
+        _reset_index_state()
 
     # Capture globals now so the thread doesn't race with a future init() call.
     _captured_db_path = _db_path
@@ -289,7 +330,7 @@ async def start_indexing(req: StartIndexRequest) -> dict:
                 try:
                     store.close()
                 except Exception:
-                    pass
+                    _log.warning("Failed to close store during error cleanup", exc_info=True)
             with _index_lock:
                 _index_state.running = False
                 _index_state.error = str(e)
@@ -356,14 +397,7 @@ async def reindex_all() -> dict:
     with _index_lock:
         if _index_state.running:
             return {"status": "already_running"}
-        _index_state.running = True
-        _index_state.done = False
-        _index_state.error = ""
-        _index_state.total = 0
-        _index_state.indexed = 0
-        _index_state.skipped = 0
-        _index_state.failed = 0
-        _index_state.current = ""
+        _reset_index_state()
 
     _captured_roots = list(roots)
     _captured_db_path = _db_path
@@ -397,7 +431,7 @@ async def reindex_all() -> dict:
                 try:
                     writer_store.close()
                 except Exception:
-                    pass
+                    _log.warning("Failed to close writer store during error cleanup", exc_info=True)
             with _index_lock:
                 _index_state.running = False
                 _index_state.error = str(e)
@@ -418,6 +452,7 @@ async def index_progress() -> dict:
             "skipped": _index_state.skipped,
             "failed": _index_state.failed,
             "current": _index_state.current,
+            "skipped_roots": _index_state.skipped_roots,
         }
 
 
@@ -449,8 +484,13 @@ def _resolve_domains(req: SearchRequest) -> list[taxonomy.Domain]:
 async def expand(req: SearchRequest) -> dict:
     from .search import expand_query_with_truncation
     domains = _resolve_domains(req)
-    terms, truncated = expand_query_with_truncation(
-        req.query, ollama_url=_ollama_url, model=_ollama_model, domains=domains
+    # Offload to a thread like /api/sync-status does: expand_query_with_truncation
+    # does a blocking httpx call to Ollama, which previously ran directly on the
+    # event loop thread, stalling every other concurrent request for its full
+    # duration.
+    terms, truncated = await asyncio.to_thread(
+        expand_query_with_truncation,
+        req.query, ollama_url=_ollama_url, model=_ollama_model, domains=domains,
     )
     return {"terms": terms, "truncated": truncated}
 
@@ -462,7 +502,13 @@ async def search(req: SearchRequest) -> list[dict]:
     if not req.query.strip():
         return []
     domains = _resolve_domains(req)
-    results = search_module.search(
+    # Offload to a thread: search_module.search does CLIP inference, sqlite
+    # reads, and a blocking httpx call to Ollama for query expansion, all of
+    # which previously ran directly on the event loop thread, blocking every
+    # other concurrent request (other users' searches, /api/setup/progress
+    # polling, thumbnail fetches) for the full duration of the model call.
+    results = await asyncio.to_thread(
+        search_module.search,
         req.query, _store, _embedder, limit=req.limit,
         ollama_url=_ollama_url, ollama_model=_ollama_model,
         preexpanded_terms=req.terms,

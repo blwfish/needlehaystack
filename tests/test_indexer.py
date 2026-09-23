@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from needlestack.indexer import find_images, _file_hash, _thumbnail, _cap_image, _load_image, index_directory, IMAGE_EXTENSIONS, MAX_PIXELS
+from needlestack_core.embedder import Embedder
 
 
 # --- _cap_image ---
@@ -104,6 +105,25 @@ def test_load_image_oversized_jpeg_capped(tmp_path, monkeypatch):
     assert w * h <= 5000
 
 
+def test_load_image_oversized_jpeg_marks_downsampled(tmp_path, monkeypatch):
+    """Regression: whether downsampling was applied was computed but discarded --
+    now recorded on the returned image's .info so the caller can persist it."""
+    from needlestack.indexer import _DOWNSAMPLED_KEY
+    monkeypatch.setattr("needlestack.indexer.MAX_PIXELS", 5000)
+    p = tmp_path / "big.jpg"
+    make_jpeg_file(p, 100, 100)
+    result = _load_image(p)
+    assert result.info.get(_DOWNSAMPLED_KEY) is True
+
+
+def test_load_image_small_jpeg_not_marked_downsampled(tmp_path):
+    p = tmp_path / "small.jpg"
+    make_jpeg_file(p, 10, 10)
+    result = _load_image(p)
+    from needlestack.indexer import _DOWNSAMPLED_KEY
+    assert not result.info.get(_DOWNSAMPLED_KEY, False)
+
+
 def test_load_image_oversized_png_capped(tmp_path, monkeypatch):
     # PNG has no draft() path — load then cap via _cap_image
     monkeypatch.setattr("needlestack.indexer.MAX_PIXELS", 5000)
@@ -174,8 +194,10 @@ def test_load_image_raw_above_max_pixels_uses_half_size(tmp_path):
     assert w * h > MAX_PIXELS
     mock_ctx, mock_raw = _mock_rawpy_context(w, h)
     with patch("needlestack.indexer.rawpy.imread", return_value=mock_ctx):
-        _load_image(p)
+        result = _load_image(p)
     mock_raw.postprocess.assert_called_once_with(use_camera_wb=True, half_size=True)
+    from needlestack.indexer import _DOWNSAMPLED_KEY
+    assert result.info.get(_DOWNSAMPLED_KEY) is True
 
 
 def test_load_image_applies_exif_orientation(tmp_path):
@@ -350,13 +372,38 @@ def make_captioner(domain=None):
 
 def make_embedder():
     e = MagicMock()
-    e.embed_image.return_value = np.zeros(512, dtype=np.float32)
+    e.embed_image.return_value = np.zeros(Embedder.dim, dtype=np.float32)
     return e
 
 
 def make_test_image(path: Path):
     img = Image.new("RGB", (100, 100), color=(200, 100, 50))
     img.save(str(path), format="JPEG")
+
+
+def test_index_directory_final_commit_covers_partial_batch(tmp_path):
+    """Regression: upsert() now batches commits (commit every _COMMIT_BATCH_SIZE
+    rows) instead of committing every single row -- a run whose image count
+    isn't a multiple of the batch size must still have every row durably
+    committed by the time index_directory returns, via the guaranteed final
+    commit in its finally block."""
+    from needlestack.store import Store
+    img_dir = tmp_path / "img"
+    img_dir.mkdir()
+    # Fewer images than the batch size, so nothing hits the batch-triggered commit.
+    for i in range(3):
+        make_test_image(img_dir / f"test{i}.jpg")
+
+    store = Store(tmp_path / "index.db")
+    indexed, _, _ = index_directory(img_dir, store, make_captioner(), make_embedder())
+    assert indexed == 3
+
+    # A second, independent connection to the same file only sees committed data.
+    from needlestack.store import Store as _Store2
+    verify_conn = _Store2(tmp_path / "index.db")
+    assert verify_conn.count() == 3
+    verify_conn.close()
+    store.close()
 
 
 def test_index_skips_already_indexed(tmp_path):
@@ -502,6 +549,23 @@ def test_index_handles_unreadable_file(tmp_path):
     assert failed == 1
     assert indexed == 0
 
+
+def test_index_failure_log_names_the_failing_stage(tmp_path, caplog):
+    """Regression: one broad except around load/exif/caption/embed/thumbnail/store
+    logged which file failed but not which of those six operations did, making
+    systematic-failure diagnosis hard across many images."""
+    import logging
+    from needlestack.store import Store
+    img_dir = tmp_path / "img"
+    img_dir.mkdir()
+    (img_dir / "bad.jpg").write_bytes(b"not an image")  # fails at "load"
+
+    store = Store(tmp_path / "index.db")
+    with caplog.at_level(logging.WARNING, logger="needlestack.indexer"):
+        index_directory(img_dir, store, make_captioner(), make_embedder())
+    assert any("during load" in r.message for r in caplog.records)
+    store.close()
+
     store.close()
 
 
@@ -529,6 +593,28 @@ def test_extract_exif_no_exif_returns_empty_string(tmp_path):
     p = tmp_path / "plain.jpg"
     Image.new("RGB", (10, 10)).save(p, format="JPEG")
     assert _extract_exif(p) == ""
+
+
+def test_extract_exif_records_downsampled_flag_when_true(tmp_path):
+    p = tmp_path / "dated.jpg"
+    _make_jpeg_with_exif(p, {0x9003: "2020:05:17 14:30:00"})  # DateTimeOriginal
+    data = _json.loads(_extract_exif(p, downsampled=True))
+    assert data["downsampled"] is True
+
+
+def test_extract_exif_no_exif_still_records_downsampled_flag(tmp_path):
+    p = tmp_path / "plain.jpg"
+    Image.new("RGB", (10, 10)).save(p, format="JPEG")
+    data = _json.loads(_extract_exif(p, downsampled=True))
+    assert data["downsampled"] is True
+
+
+def test_extract_exif_raw_format_records_downsampled_flag(tmp_path):
+    p = tmp_path / "photo.cr2"
+    p.write_bytes(b"not a real RAW file")
+    data = _json.loads(_extract_exif(p, downsampled=True))
+    assert data["downsampled"] is True
+    assert data["unsupported_format"] is True
 
 
 def test_extract_exif_unreadable_file_does_not_raise(tmp_path):
@@ -593,6 +679,25 @@ def test_dms_to_decimal_south_west_negative():
 def test_dms_to_decimal_invalid_input_returns_none():
     assert _dms_to_decimal(("not", "a", "number"), "N") is None
     assert _dms_to_decimal(None, "N") is None
+
+
+def test_dms_to_decimal_unrecognized_ref_returns_none_not_positive(caplog):
+    """Regression: an unrecognized/missing hemisphere ref used to fall through
+    to the same branch as 'N'/'E' (silent positive), which would mirror a
+    southern/western coordinate to the wrong hemisphere instead of dropping it."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="needlestack.indexer"):
+        assert _dms_to_decimal((10, 0, 0), "X") is None
+        assert _dms_to_decimal((10, 0, 0), "") is None
+        assert _dms_to_decimal((10, 0, 0), "n") is None  # case-sensitive per EXIF spec
+    assert any("Unrecognized GPS hemisphere ref" in r.message for r in caplog.records)
+
+
+def test_dms_to_decimal_lowercase_valid_ref_is_still_rejected():
+    """EXIF GPSLatitudeRef/GPSLongitudeRef are single uppercase ASCII letters by
+    spec; a lowercase 'n' is not a valid ref value, not a case-insensitive 'N'."""
+    assert _dms_to_decimal((10, 0, 0), "n") is None
+    assert _dms_to_decimal((10, 0, 0), "s") is None
 
 
 def test_json_safe_bytes_ascii_decodes():

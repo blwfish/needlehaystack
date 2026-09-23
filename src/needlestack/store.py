@@ -151,6 +151,7 @@ class Store:
         self._migrate()
         self.conn.commit()
         self._embedding_cache: tuple[list[int], list[str], "np.ndarray"] | None = None
+        self._roots_cache: list[dict] | None = None
 
     def _migrate(self) -> None:
         """Bring the DB to the current schema, and create/repair the FTS index.
@@ -231,7 +232,13 @@ class Store:
         caption_version: str = "",
         view: str = "",
         exif_json: str = "",
+        commit: bool = True,
     ) -> None:
+        """commit=False lets a caller doing many upserts in a row (bulk indexing)
+        batch commits instead of fsyncing after every single row -- WAL mode
+        already gives durable, isolated writes without a commit-per-row; the
+        caller is responsible for eventually committing (directly on .conn, or
+        via a later commit=True call)."""
         self.conn.execute(
             """
             INSERT INTO images (
@@ -257,7 +264,8 @@ class Store:
             (path, hash_, caption, reporting_marks, equipment, structured_json,
              int(is_railroad), caption_version, view, exif_json, _enc(embedding), thumbnail),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         self.invalidate_embedding_cache()
 
     def get_exif(self, path: str) -> str | None:
@@ -296,13 +304,24 @@ class Store:
         ids = []
         paths = []
         vecs = []
+        skipped = 0
         for r in rows:
             vec = _try_dec(r[2], r[1])
             if vec is None:
+                skipped += 1
                 continue
             vecs.append(vec)
             ids.append(r[0])
             paths.append(r[1])
+        if skipped:
+            # _try_dec already warned per-row; this summary line is what makes
+            # "the matrix search()/doctor.py just got is missing N embeddings"
+            # visible from a single call site instead of only from scattered
+            # per-row log lines a caller would have to notice and count itself.
+            _log.warning(
+                "all_embeddings: skipped %d corrupt embedding(s) out of %d rows",
+                skipped, len(rows),
+            )
         if not ids:
             return [], [], np.empty((0, _embedding_dim()), dtype=np.float32)
         matrix = np.stack(vecs)
@@ -382,7 +401,18 @@ class Store:
         permanently deleted from the index.
         """
         p = Path(path)
-        return p.is_absolute() and not p.exists()
+        if not p.is_absolute():
+            return False
+        try:
+            return not p.exists()
+        except OSError as e:
+            # A transient OS-level error (encoding issue, permission denial,
+            # unmounted network share) is not proof the file is gone -- treat
+            # it as "can't verify, so don't delete" rather than letting the
+            # exception propagate and abort count_missing/remove_missing for
+            # every other row too.
+            _log.warning("Could not check existence of %s: %s", path, e)
+            return False
 
     def count_missing(self) -> int:
         """Count indexed entries whose files no longer exist, without deleting them."""
@@ -404,23 +434,32 @@ class Store:
         """Return all indexed roots as [{"path": str, "domain": str}].
 
         Falls back to the legacy indexed_root / indexed_domain keys so old
-        single-root databases work without migration.
+        single-root databases work without migration. Cached in-process (like
+        all_embeddings()) since this data only changes via set_roots()/add_root(),
+        but was previously re-read from config and re-JSON-parsed on every
+        /search and /expand request.
         """
+        if self._roots_cache is not None:
+            return self._roots_cache
         raw = self.get_config("indexed_roots")
         if raw:
             try:
-                return _json.loads(raw)
+                self._roots_cache = _json.loads(raw)
             except _json.JSONDecodeError:
                 _log.warning("indexed_roots config is malformed JSON — treating as empty")
-                return []
+                self._roots_cache = []
+            return self._roots_cache
         root = self.get_config("indexed_root")
         if root:
             domain = self.get_config("indexed_domain", "railroad")
-            return [{"path": root, "domain": domain}]
-        return []
+            self._roots_cache = [{"path": root, "domain": domain}]
+            return self._roots_cache
+        self._roots_cache = []
+        return self._roots_cache
 
     def set_roots(self, roots: list[dict]) -> None:
         self.set_config("indexed_roots", _json.dumps(roots))
+        self._roots_cache = None
 
     def add_root(self, path: str, domain: str) -> None:
         """Register a root directory. Updates domain if root is already known."""

@@ -48,6 +48,9 @@ def _file_hash(path: Path) -> str:
     return f"{stat.st_mtime:.0f}-{stat.st_size}"
 
 
+_DOWNSAMPLED_KEY = "needlestack_downsampled"
+
+
 def _cap_image(img: Image.Image) -> Image.Image:
     """Downsample in-memory if pixel count exceeds MAX_PIXELS. Original file untouched."""
     w, h = img.size
@@ -55,10 +58,17 @@ def _cap_image(img: Image.Image) -> Image.Image:
         return img
     scale = (MAX_PIXELS / (w * h)) ** 0.5
     img.thumbnail((int(w * scale), int(h * scale)), Image.LANCZOS)
+    img.info[_DOWNSAMPLED_KEY] = True
     return img
 
 
 def _load_image(path: Path) -> Image.Image:
+    """Returns the loaded (and possibly downsampled) image. Whether downsampling
+    was applied -- RAW half_size, JPEG draft(), or _cap_image's final resize --
+    is recorded on the returned image's `.info[_DOWNSAMPLED_KEY]` rather than
+    changing this function's return type (many call sites/tests expect a plain
+    Image back); _extract_exif reads it to record whether the persisted pixel
+    dimensions are native or reduced."""
     if path.suffix.lower() in RAW_EXTENSIONS:
         with rawpy.imread(str(path)) as raw:
             # Apply half_size only when the raw sensor exceeds the cap — avoids
@@ -67,17 +77,24 @@ def _load_image(path: Path) -> Image.Image:
             sizes = raw.sizes
             half = sizes.raw_width * sizes.raw_height > MAX_PIXELS
             rgb = raw.postprocess(use_camera_wb=True, half_size=half)
-        return _cap_image(Image.fromarray(rgb))
+        result = _cap_image(Image.fromarray(rgb))
+        if half:
+            result.info[_DOWNSAMPLED_KEY] = True
+        return result
     else:
         img = Image.open(path)
         w, h = img.size
-        if w * h > MAX_PIXELS:
+        drafted = w * h > MAX_PIXELS
+        if drafted:
             scale = (MAX_PIXELS / (w * h)) ** 0.5
             # For JPEG, draft() decodes natively at lower resolution (no full load)
             img.draft("RGB", (int(w * scale), int(h * scale)))
         img.load()
         img = ImageOps.exif_transpose(img)
-        return _cap_image(img.convert("RGB"))
+        result = _cap_image(img.convert("RGB"))
+        if drafted:
+            result.info[_DOWNSAMPLED_KEY] = True
+        return result
 
 
 def _thumbnail(image: Image.Image) -> bytes:
@@ -117,16 +134,23 @@ def _json_safe(value):
 
 def _dms_to_decimal(dms, ref: str) -> float | None:
     """Convert an EXIF GPS (degrees, minutes, seconds) tuple + hemisphere ref
-    ('N'/'S'/'E'/'W') to signed decimal degrees."""
+    ('N'/'S'/'E'/'W') to signed decimal degrees. Returns None (coordinate
+    dropped, not guessed) if the ref isn't one of those four -- an unrecognized
+    ref used to silently fall through to the "positive" branch, indistinguishable
+    from a genuine 'N'/'E', which would mirror the coordinate to the wrong
+    hemisphere instead of surfacing that something was actually wrong."""
     try:
         degrees, minutes, seconds = (float(v) for v in dms)
     except (TypeError, ValueError):
+        return None
+    if ref not in ("N", "S", "E", "W"):
+        _log.warning("Unrecognized GPS hemisphere ref %r — dropping coordinate", ref)
         return None
     decimal = degrees + minutes / 60.0 + seconds / 3600.0
     return -decimal if ref in ("S", "W") else decimal
 
 
-def _extract_exif(path: Path) -> str:
+def _extract_exif(path: Path, downsampled: bool = False) -> str:
     """Extract EXIF metadata as a JSON string, or "" if there's none.
 
     Disposition (Data-Capture Backward-Chaining Rule): every tag Pillow exposes is
@@ -142,6 +166,12 @@ def _extract_exif(path: Path) -> str:
     EXIF" (a real, valid outcome for non-RAW files) — the two used to be
     indistinguishable, which silently discarded RAW metadata for every RAW file
     indexed while reporting each one as a normal success.
+
+    `downsampled` (from _load_image's result.info, see _DOWNSAMPLED_KEY) records
+    whether the pixel dimensions actually stored (in the embedding/thumbnail
+    pipeline) are the file's native resolution or a reduced one -- previously
+    computed during loading but discarded, so this was unrecoverable after the
+    fact.
     """
     if path.suffix.lower() in RAW_EXTENSIONS:
         _log.info(
@@ -150,12 +180,13 @@ def _extract_exif(path: Path) -> str:
         return _json.dumps({
             "unsupported_format": True,
             "reason": "RAW formats are not supported for EXIF extraction",
+            "downsampled": downsampled,
         })
     try:
         with Image.open(path) as img:
             exif = img.getexif()
             if not exif:
-                return ""
+                return _json.dumps({"downsampled": downsampled}) if downsampled else ""
             raw = {ExifTags.TAGS.get(k, str(k)): _json_safe(v) for k, v in exif.items()}
 
             gps_raw: dict = {}
@@ -168,6 +199,8 @@ def _extract_exif(path: Path) -> str:
                 raw["GPS"] = _json_safe(gps_raw)
 
             result: dict = {"raw": raw}
+            if downsampled:
+                result["downsampled"] = True
             for src_key, out_key in (
                 ("DateTimeOriginal", "date_taken"), ("DateTime", "date_taken"),
                 ("Make", "make"), ("Model", "model"),
@@ -244,64 +277,92 @@ def index_directory(
         TimeRemainingColumn(),
     ) if not silent else None
 
+    # Batch commits during bulk indexing instead of fsyncing after every single
+    # row -- WAL already gives durable, isolated writes without a commit-per-row,
+    # and captioning (seconds per image) dominates indexing time anyway. Kept
+    # small (not "one commit at the very end") to bound how much captioning work
+    # a crash mid-run could lose to a handful of images rather than the whole run.
+    _COMMIT_BATCH_SIZE = 5
+
     def _run():
         nonlocal indexed, skipped, failed
+        uncommitted = 0
 
         task = progress_ctx.add_task("Indexing", total=len(images)) if progress_ctx else None
 
-        for path in images:
-            if progress_ctx:
-                progress_ctx.update(task, description=f"[cyan]{path.name[:40]}[/cyan]")
+        try:
+            for path in images:
+                if progress_ctx:
+                    progress_ctx.update(task, description=f"[cyan]{path.name[:40]}[/cyan]")
 
-            hash_ = _file_hash(path)
+                hash_ = _file_hash(path)
 
-            # Skip only when the file is unchanged AND its caption came from the
-            # current model/prompt — a model upgrade or prompt bump re-captions.
-            stored_hash, stored_version = store.get_hash_and_version(str(path))
-            if not force and stored_hash == hash_ and stored_version == version:
-                skipped += 1
+                # Skip only when the file is unchanged AND its caption came from the
+                # current model/prompt — a model upgrade or prompt bump re-captions.
+                stored_hash, stored_version = store.get_hash_and_version(str(path))
+                if not force and stored_hash == hash_ and stored_version == version:
+                    skipped += 1
+                    if progress_ctx:
+                        progress_ctx.advance(task)
+                    _notify(path.name)
+                    continue
+
+                # Tracks which of the several operations below is in flight, so a
+                # failure's log line says *what* failed (load/exif/caption/embed/
+                # thumbnail/store), not just *that* something did -- one broad
+                # except around all of them previously gave no way to tell a
+                # captioning failure from a corrupt-file load failure without
+                # reading a traceback that isn't captured here.
+                stage = "load"
+                try:
+                    image = _load_image(path)
+                    stage = "exif"
+                    exif_json = _extract_exif(path, downsampled=image.info.get(_DOWNSAMPLED_KEY, False))
+                    stage = "caption"
+                    result = captioner.caption(image, thorough=thorough)
+                    # An empty caption means captioning failed (e.g. Ollama was unreachable
+                    # and even the plain-text fallback returned nothing). Treat it as a
+                    # failure so the row is NOT stored with the current caption_version —
+                    # otherwise the skip check above would suppress retries forever.
+                    if not result.caption.strip():
+                        raise RuntimeError("captioner returned an empty caption")
+                    stage = "embed"
+                    embedding = embedder.embed_image(image)
+                    stage = "thumbnail"
+                    thumb = _thumbnail(image)
+                    stage = "store"
+                    uncommitted += 1
+                    store.upsert(
+                        str(path), hash_, result.caption, embedding, thumb,
+                        # result.description is intentionally omitted: it's already synthesized
+                        # into result.caption, so a separate column would be redundant.
+                        reporting_marks=result.reporting_marks,
+                        equipment=result.equipment,
+                        structured_json=result.structured_json,
+                        is_railroad=int(result.is_railroad),
+                        caption_version=version,
+                        view=result.view,
+                        exif_json=exif_json,
+                        commit=(uncommitted >= _COMMIT_BATCH_SIZE),
+                    )
+                    if uncommitted >= _COMMIT_BATCH_SIZE:
+                        uncommitted = 0
+                    indexed += 1
+                except Exception as e:
+                    # Broad catch is intentional: no single image should kill the whole run.
+                    # Always log via the module logger so failures are visible even on the
+                    # browser-polling (on_progress) path where progress_ctx is None.
+                    _log.warning("Failed to index %s during %s: %s", path.name, stage, e)
+                    if progress_ctx:
+                        progress_ctx.log(f"[red]Failed[/red] {path.name} ({stage}): {e}")
+                    failed += 1
+
                 if progress_ctx:
                     progress_ctx.advance(task)
                 _notify(path.name)
-                continue
-
-            try:
-                image = _load_image(path)
-                exif_json = _extract_exif(path)
-                result = captioner.caption(image, thorough=thorough)
-                # An empty caption means captioning failed (e.g. Ollama was unreachable
-                # and even the plain-text fallback returned nothing). Treat it as a
-                # failure so the row is NOT stored with the current caption_version —
-                # otherwise the skip check above would suppress retries forever.
-                if not result.caption.strip():
-                    raise RuntimeError("captioner returned an empty caption")
-                embedding = embedder.embed_image(image)
-                thumb = _thumbnail(image)
-                store.upsert(
-                    str(path), hash_, result.caption, embedding, thumb,
-                    # result.description is intentionally omitted: it's already synthesized
-                    # into result.caption, so a separate column would be redundant.
-                    reporting_marks=result.reporting_marks,
-                    equipment=result.equipment,
-                    structured_json=result.structured_json,
-                    is_railroad=int(result.is_railroad),
-                    caption_version=version,
-                    view=result.view,
-                    exif_json=exif_json,
-                )
-                indexed += 1
-            except Exception as e:
-                # Broad catch is intentional: no single image should kill the whole run.
-                # Always log via the module logger so failures are visible even on the
-                # browser-polling (on_progress) path where progress_ctx is None.
-                _log.warning("Failed to index %s: %s", path.name, e)
-                if progress_ctx:
-                    progress_ctx.log(f"[red]Failed[/red] {path.name}: {e}")
-                failed += 1
-
-            if progress_ctx:
-                progress_ctx.advance(task)
-            _notify(path.name)
+        finally:
+            if uncommitted:
+                store.conn.commit()
 
     if progress_ctx:
         with progress_ctx:

@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from pathlib import Path
 from needlestack.store import Store, _enc, _dec
+from needlestack_core.embedder import Embedder
 
 
 @pytest.fixture
@@ -14,7 +15,7 @@ def store(tmp_path):
 
 def fake_embedding(seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    v = rng.standard_normal(512).astype(np.float32)
+    v = rng.standard_normal(Embedder.dim).astype(np.float32)
     return v / np.linalg.norm(v)
 
 
@@ -82,7 +83,7 @@ def test_all_embeddings_empty(store):
     ids, paths, matrix = store.all_embeddings()
     assert ids == []
     assert paths == []
-    assert matrix.shape == (0, 512)
+    assert matrix.shape == (0, Embedder.dim)
 
 
 def test_all_embeddings_returns_correct_shape(store):
@@ -91,7 +92,7 @@ def test_all_embeddings_returns_correct_shape(store):
     ids, paths, matrix = store.all_embeddings()
     assert len(ids) == 3
     assert len(paths) == 3
-    assert matrix.shape == (3, 512)
+    assert matrix.shape == (3, Embedder.dim)
 
 
 def test_all_embeddings_preserves_values(store):
@@ -99,6 +100,39 @@ def test_all_embeddings_preserves_values(store):
     store.upsert("/x.jpg", "hx", "caption", emb, b"t")
     ids, paths, matrix = store.all_embeddings()
     assert np.allclose(matrix[0], emb, atol=1e-6)
+
+
+def test_all_embeddings_mixed_corrupt_and_valid_stay_aligned(store, caplog):
+    """Regression: all_embeddings() was only ever tested with all-valid or
+    fully-empty rows; a mix of one corrupt blob among valid ones is exactly
+    where an id/path/matrix-row alignment bug (an off-by-one from skipping the
+    corrupt row inconsistently across the three parallel lists) would hide."""
+    import logging
+    emb_a = fake_embedding(1)
+    emb_b = fake_embedding(2)
+    emb_c = fake_embedding(3)
+    store.upsert("/a.jpg", "h1", "caption a", emb_a, b"t")
+    store.upsert("/b.jpg", "h2", "caption b", emb_b, b"t")  # will be corrupted below
+    store.upsert("/c.jpg", "h3", "caption c", emb_c, b"t")
+    store.conn.execute(
+        "UPDATE images SET embedding = ? WHERE path = ?", (b"not-a-valid-npy-blob", "/b.jpg")
+    )
+    store.conn.commit()
+    store._embedding_cache = None
+
+    with caplog.at_level(logging.WARNING, logger="needlestack.store"):
+        ids, paths, matrix = store.all_embeddings()
+
+    assert len(ids) == 2
+    assert len(paths) == 2
+    assert matrix.shape == (2, Embedder.dim)
+    assert "/b.jpg" not in paths
+    by_path = dict(zip(paths, matrix))
+    assert np.allclose(by_path["/a.jpg"], emb_a, atol=1e-6)
+    assert np.allclose(by_path["/c.jpg"], emb_c, atol=1e-6)
+    # Summary log makes the skip visible from this one call, not just the
+    # per-row warning _try_dec already logs.
+    assert any("skipped 1 corrupt embedding" in r.message for r in caplog.records)
 
 
 # --- fts_search ---
@@ -193,6 +227,33 @@ def test_get_roots_returns_empty_on_malformed_json(store):
     assert roots == []
 
 
+def test_get_roots_is_cached_across_calls(store):
+    """Regression: get_roots() re-read and re-JSON-parsed indexed_roots from
+    config on every call (every /search and /expand request), despite the data
+    only changing via set_roots()/add_root()."""
+    store.add_root("/photos", "railroad")
+    first = store.get_roots()
+    second = store.get_roots()
+    assert first is second  # same cached object, not re-parsed
+
+
+def test_get_roots_cache_invalidated_by_add_root(store):
+    store.add_root("/photos", "railroad")
+    store.get_roots()  # populate cache
+    store.add_root("/more-photos", "naval")
+    assert store.get_roots() == [
+        {"path": "/photos", "domain": "railroad"},
+        {"path": "/more-photos", "domain": "naval"},
+    ]
+
+
+def test_get_roots_cache_invalidated_by_set_roots(store):
+    store.set_roots([{"path": "/a", "domain": "railroad"}])
+    store.get_roots()  # populate cache
+    store.set_roots([{"path": "/b", "domain": "naval"}])
+    assert store.get_roots() == [{"path": "/b", "domain": "naval"}]
+
+
 def test_set_and_get_config(store):
     store.set_config("indexed_root", "/photos")
     assert store.get_config("indexed_root") == "/photos"
@@ -285,6 +346,23 @@ def test_remove_missing_empty_index(store):
     assert store.remove_missing() == 0
 
 
+def test_remove_missing_does_not_delete_on_path_exists_oserror(store, monkeypatch):
+    """Regression: Path.exists() raising an OS-level error (encoding issue,
+    permission denial, unmounted share) is not proof the file is gone -- it
+    must not propagate and abort the whole batch, and must not be treated as
+    "missing" either."""
+    from pathlib import Path
+    store.upsert("/some/absolute/path.jpg", "h1", "caption", fake_embedding(), b"t")
+
+    def _raise(self):
+        raise OSError("simulated stat failure")
+
+    monkeypatch.setattr(Path, "exists", _raise)
+    assert store.count_missing() == 0
+    assert store.remove_missing() == 0
+    assert store.count() == 1
+
+
 def test_remove_missing_does_not_delete_unverifiable_relative_paths(store):
     """A relative stored path (only possible from a pre-fix database -- indexing
     now always stores absolute paths) can't be safely judged missing from an
@@ -351,7 +429,7 @@ def test_embedding_cache_repopulates_after_invalidation(store):
 
     ids, _paths, matrix = store.all_embeddings()
     assert len(ids) == 2
-    assert matrix.shape == (2, 512)
+    assert matrix.shape == (2, Embedder.dim)
 
 
 # --- structured columns + caption_version ---

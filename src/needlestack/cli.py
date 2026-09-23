@@ -192,8 +192,12 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
 
     if not _port_free(port):
         try:
-            resp = _httpx.get(f"http://127.0.0.1:{port}/", timeout=2.0)
-            if "needlestack" in resp.text.lower():
+            # Typed signal (/api/health's JSON body), not a substring match
+            # against the rendered "/" HTML page -- the producer is this same
+            # app, fully able to emit a structured identity check instead of
+            # relying on "does the page happen to mention our name."
+            resp = _httpx.get(f"http://127.0.0.1:{port}/api/health", timeout=2.0)
+            if resp.json().get("app") == "needlestack":
                 console.print(f"[dim]needlestack already running on port {port} — opening browser.[/dim]")
                 webbrowser.open(f"http://localhost:{port}")
                 return
