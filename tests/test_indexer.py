@@ -525,7 +525,7 @@ def test_index_empty_caption_not_stored_and_retried(tmp_path):
     failing.caption.return_value = CaptionResult(caption="", description="")
     indexed1, skipped1, failed1 = index_directory(img_path.parent, store, failing, embedder)
     assert (indexed1, skipped1, failed1) == (0, 0, 1)
-    assert store.get_caption_version(str(img_path)) is None  # nothing persisted
+    assert store.get_hash_and_version(str(img_path))[1] is None  # nothing persisted
 
     # Second run with a working captioner: the image is retried, not skipped.
     indexed2, skipped2, _ = index_directory(img_path.parent, store, make_captioner(), embedder)

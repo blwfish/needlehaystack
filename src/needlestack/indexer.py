@@ -51,12 +51,20 @@ def _file_hash(path: Path) -> str:
 _DOWNSAMPLED_KEY = "needlestack_downsampled"
 
 
+def _scale_for(w: int, h: int) -> float:
+    """Linear scale factor to bring a w x h image down to MAX_PIXELS or fewer.
+    Single source of truth: previously this exact formula was written twice
+    (here and in _load_image's JPEG draft() sizing) with nothing forcing them
+    to stay in sync."""
+    return (MAX_PIXELS / (w * h)) ** 0.5
+
+
 def _cap_image(img: Image.Image) -> Image.Image:
     """Downsample in-memory if pixel count exceeds MAX_PIXELS. Original file untouched."""
     w, h = img.size
     if w * h <= MAX_PIXELS:
         return img
-    scale = (MAX_PIXELS / (w * h)) ** 0.5
+    scale = _scale_for(w, h)
     img.thumbnail((int(w * scale), int(h * scale)), Image.LANCZOS)
     img.info[_DOWNSAMPLED_KEY] = True
     return img
@@ -86,7 +94,7 @@ def _load_image(path: Path) -> Image.Image:
         w, h = img.size
         drafted = w * h > MAX_PIXELS
         if drafted:
-            scale = (MAX_PIXELS / (w * h)) ** 0.5
+            scale = _scale_for(w, h)
             # For JPEG, draft() decodes natively at lower resolution (no full load)
             img.draft("RGB", (int(w * scale), int(h * scale)))
         img.load()

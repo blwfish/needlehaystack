@@ -47,18 +47,18 @@ def test_embedding_roundtrip_preserves_norm():
 
 def test_upsert_and_get_hash(store):
     store.upsert("/a/b.jpg", "hash1", "a red boxcar", fake_embedding(), b"thumb")
-    assert store.get_hash("/a/b.jpg") == "hash1"
+    assert store.get_hash_and_version("/a/b.jpg")[0] == "hash1"
 
 
 def test_get_hash_missing(store):
-    assert store.get_hash("/nonexistent.jpg") is None
+    assert store.get_hash_and_version("/nonexistent.jpg")[0] is None
 
 
 def test_upsert_updates_existing(store):
     emb = fake_embedding()
     store.upsert("/a/b.jpg", "hash1", "old caption", emb, b"thumb")
     store.upsert("/a/b.jpg", "hash2", "new caption", emb, b"thumb2")
-    assert store.get_hash("/a/b.jpg") == "hash2"
+    assert store.get_hash_and_version("/a/b.jpg")[0] == "hash2"
     rows = store.get_by_ids(
         [store.conn.execute("SELECT id FROM images WHERE path='/a/b.jpg'").fetchone()[0]]
     )
@@ -445,7 +445,7 @@ def test_upsert_roundtrips_structured_fields(store):
         "FROM images WHERE path='/a.jpg'"
     ).fetchone()
     assert row == ("ATSF 3751", "steam locomotive Santa Fe", '{"era":"steam"}', 1, "m:v2")
-    assert store.get_caption_version("/a.jpg") == "m:v2"
+    assert store.get_hash_and_version("/a.jpg")[1] == "m:v2"
 
 
 def test_upsert_roundtrips_exif_json(store):
@@ -459,7 +459,7 @@ def test_get_exif_missing(store):
 
 
 def test_get_caption_version_missing(store):
-    assert store.get_caption_version("/nope.jpg") is None
+    assert store.get_hash_and_version("/nope.jpg")[1] is None
 
 
 def test_get_hash_and_version_combined(store):
@@ -539,7 +539,7 @@ def test_migrate_upgrades_old_db(tmp_path):
     assert s.count() == 1
     assert s.fts_search('"caboose"')[0][1] == "/old.jpg"
     # Old row has no caption_version → counts as stale, triggering re-caption later.
-    assert s.get_caption_version("/old.jpg") is None
+    assert s.get_hash_and_version("/old.jpg")[1] is None
     assert s.count_stale_captions("m:v2") == 1
     s.close()
 

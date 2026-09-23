@@ -197,18 +197,6 @@ class Store:
         )
         self.conn.commit()
 
-    def get_hash(self, path: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT hash FROM images WHERE path = ?", (path,)
-        ).fetchone()
-        return row[0] if row else None
-
-    def get_caption_version(self, path: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT caption_version FROM images WHERE path = ?", (path,)
-        ).fetchone()
-        return row[0] if row else None
-
     def get_hash_and_version(self, path: str) -> tuple[str | None, str | None]:
         """Fetch hash + caption_version in one query — the indexer's per-image skip
         check needs both, and one row fetch beats two on a large already-indexed tree."""

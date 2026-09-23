@@ -200,6 +200,22 @@ def test_test_inference_no_latency_row_when_absent(tmp_path):
     assert "Test inference latency" not in report
 
 
+def test_test_inference_latency_row_shown_for_zero_duration(tmp_path):
+    """Regression: `if total_duration_ns:` treated a legitimate 0 the same as
+    "field absent," silently hiding a real (if implausibly fast) measurement."""
+    tags = _tags_resp(["qwen2.5vl:7b"])
+    gen = MagicMock()
+    gen.raise_for_status.return_value = None
+    gen.json.return_value = {"response": "OK", "total_duration": 0}
+    with (
+        patch("httpx.get", return_value=tags),
+        patch("httpx.post", return_value=gen),
+    ):
+        report = run(db_path=tmp_path / "missing.db", ollama_model="qwen2.5vl:7b")
+    assert "Test inference latency" in report
+    assert "0.00s" in report
+
+
 def test_test_inference_failure(tmp_path):
     tags = _tags_resp(["qwen2.5vl:7b"])
     with (

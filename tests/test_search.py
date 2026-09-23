@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from needlestack.search import (
     _fts_query, _expand_query, search, MIN_SCORE, _make_expand_prompt, _normalize_fts_ranks,
+    _cap_terms, MAX_EXPANSION_TERMS,
 )
 from needlestack_core import taxonomy
 from needlestack_core.embedder import Embedder
@@ -91,6 +92,22 @@ def test_expand_query_caps_length():
     with patch("needlestack.search.httpx.post", return_value=mock_resp):
         result = _expand_query("caboose")
     assert len(result) == 13  # cap is exactly 13, not "at most 13"
+
+
+def test_cap_terms_at_exact_boundary_not_truncated():
+    """MAX_EXPANSION_TERMS itself must NOT be flagged as truncated (boundary is
+    strict > per _cap_terms' own `len(unique) > MAX_EXPANSION_TERMS`)."""
+    terms = [f"term{i}" for i in range(MAX_EXPANSION_TERMS)]
+    capped, truncated = _cap_terms(terms)
+    assert len(capped) == MAX_EXPANSION_TERMS
+    assert truncated is False
+
+
+def test_cap_terms_one_over_boundary_is_truncated():
+    terms = [f"term{i}" for i in range(MAX_EXPANSION_TERMS + 1)]
+    capped, truncated = _cap_terms(terms)
+    assert len(capped) == MAX_EXPANSION_TERMS
+    assert truncated is True
 
 
 def test_expand_query_strips_whitespace():

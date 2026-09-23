@@ -37,15 +37,13 @@ def _make_expand_prompt(domains: list[Domain]) -> str:
 
 
 def _expand_query_raw(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL,
-                      domain: Domain | None = None,
                       domains: list[Domain] | None = None) -> list[str]:
     """Uncapped expansion union — shared by _expand_query and
     expand_query_with_truncation so the cap/truncation logic has one source of truth
     (see _cap_terms) instead of being duplicated at both call sites."""
     # Deterministic domain synonyms are always included, so known terms expand even
     # when the LLM is unavailable or flubs; the LLM widens coverage beyond the taxonomy.
-    # `domains` takes precedence over `domain`; both are accepted for backward compat.
-    all_domains = domains if domains else ([domain] if domain is not None else [taxonomy.RAILROAD])
+    all_domains = domains if domains else [taxonomy.RAILROAD]
     seen_local: set[str] = set()
     local: list[str] = []
     for d in all_domains:
@@ -93,7 +91,6 @@ def _cap_terms(unique: list[str]) -> tuple[list[str], bool]:
 
 
 def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL,
-                  domain: Domain | None = None,
                   domains: list[Domain] | None = None) -> list[str]:
     """search() calls this, not expand_query_with_truncation -- the truncation
     flag is intentionally not propagated through search()'s return value (a list
@@ -101,21 +98,19 @@ def _expand_query(query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT
     invasive API change across its callers). It's still visible via _cap_terms'
     log line above. A caller that genuinely needs the flag (server.py's /expand
     endpoint) uses expand_query_with_truncation directly instead."""
-    unique = _expand_query_raw(query, ollama_url=ollama_url, model=model,
-                               domain=domain, domains=domains)
+    unique = _expand_query_raw(query, ollama_url=ollama_url, model=model, domains=domains)
     capped, _truncated = _cap_terms(unique)
     return capped
 
 
 def expand_query_with_truncation(
     query: str, ollama_url: str = OLLAMA_URL, model: str = DEFAULT_MODEL,
-    domain: Domain | None = None, domains: list[Domain] | None = None,
+    domains: list[Domain] | None = None,
 ) -> tuple[list[str], bool]:
     """Like _expand_query, but also reports whether the term list was capped — for
     API consumers (server.py's /expand) that need to surface this to the UI instead
     of silently discarding the distinction between 'exactly N terms' and 'overflow'."""
-    unique = _expand_query_raw(query, ollama_url=ollama_url, model=model,
-                               domain=domain, domains=domains)
+    unique = _expand_query_raw(query, ollama_url=ollama_url, model=model, domains=domains)
     return _cap_terms(unique)
 
 
@@ -178,11 +173,10 @@ def search(
     ollama_url: str = OLLAMA_URL,
     ollama_model: str = DEFAULT_MODEL,
     preexpanded_terms: list[str] | None = None,
-    domain: Domain | None = None,
     domains: list[Domain] | None = None,
 ) -> list[dict]:
     terms = preexpanded_terms if preexpanded_terms is not None else _expand_query(
-        query, ollama_url=ollama_url, model=ollama_model, domain=domain, domains=domains
+        query, ollama_url=ollama_url, model=ollama_model, domains=domains
     )
     fts_q = _fts_query(terms)
 
