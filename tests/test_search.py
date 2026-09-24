@@ -1,9 +1,14 @@
+import httpx
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from needlestack.search import _fts_query, _expand_query, search, MIN_SCORE, _make_expand_prompt
+from needlestack.search import (
+    _fts_query, _expand_query, search, MIN_SCORE, _make_expand_prompt, _normalize_fts_ranks,
+    _cap_terms, MAX_EXPANSION_TERMS,
+)
 from needlestack_core import taxonomy
+from needlestack_core.embedder import Embedder
 from needlestack.store import Store
 
 
@@ -42,7 +47,7 @@ def test_fts_query_phrases():
 def test_expand_query_returns_original_plus_taxonomy_on_failure():
     """On LLM failure, the original term plus deterministic taxonomy synonyms still
     come back — known railroad terms expand even with Ollama down."""
-    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+    with patch("needlestack.search.httpx.post", side_effect=httpx.TimeoutException("timeout")):
         result = _expand_query("caboose")
     assert result[0] == "caboose"
     assert "waycar" in result and "crummy" in result
@@ -50,7 +55,7 @@ def test_expand_query_returns_original_plus_taxonomy_on_failure():
 
 def test_expand_query_unknown_term_on_failure_is_bare():
     """A term not in the taxonomy and with the LLM down expands to just itself."""
-    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+    with patch("needlestack.search.httpx.post", side_effect=httpx.TimeoutException("timeout")):
         result = _expand_query("automobile")
     assert result == ["automobile"]
 
@@ -89,6 +94,22 @@ def test_expand_query_caps_length():
     assert len(result) == 13  # cap is exactly 13, not "at most 13"
 
 
+def test_cap_terms_at_exact_boundary_not_truncated():
+    """MAX_EXPANSION_TERMS itself must NOT be flagged as truncated (boundary is
+    strict > per _cap_terms' own `len(unique) > MAX_EXPANSION_TERMS`)."""
+    terms = [f"term{i}" for i in range(MAX_EXPANSION_TERMS)]
+    capped, truncated = _cap_terms(terms)
+    assert len(capped) == MAX_EXPANSION_TERMS
+    assert truncated is False
+
+
+def test_cap_terms_one_over_boundary_is_truncated():
+    terms = [f"term{i}" for i in range(MAX_EXPANSION_TERMS + 1)]
+    capped, truncated = _cap_terms(terms)
+    assert len(capped) == MAX_EXPANSION_TERMS
+    assert truncated is True
+
+
 def test_expand_query_strips_whitespace():
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"response": "  waycar ,  hack  , crummy "}
@@ -102,7 +123,7 @@ def test_expand_query_strips_whitespace():
 
 def fake_embedding(seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    v = rng.standard_normal(512).astype(np.float32)
+    v = rng.standard_normal(Embedder.dim).astype(np.float32)
     return v / np.linalg.norm(v)
 
 
@@ -184,6 +205,30 @@ def test_search_results_ordered_by_score(populated_store):
     assert scores == sorted(scores, reverse=True)
 
 
+def test_min_score_rejects_weak_best_of_a_bad_lot_clip_match(tmp_path):
+    """Regression: min-max normalization used to rescale the single best-scoring
+    CLIP candidate to exactly 1.0 on every non-tied query, so CLIP_WEIGHT*1.0=0.40
+    always exceeded MIN_SCORE=0.38 regardless of how weak the actual cosine
+    similarity was. A query with no textual match and only weak visual similarity
+    to every indexed photo must now be excluded, not returned just because it was
+    relatively the "best of a bad lot"."""
+    from needlestack.store import Store
+    s = Store(tmp_path / "weak.db")
+    # Two docs whose embeddings are unrelated to the query vector (near-orthogonal
+    # random unit vectors in 512-d space) and whose captions never match the query
+    # text, so FTS contributes nothing and only CLIP is in play.
+    s.upsert("/a.jpg", "h1", "nothing relevant here", fake_embedding(10), b"t")
+    s.upsert("/b.jpg", "h2", "nothing relevant here either", fake_embedding(11), b"t")
+
+    embedder = MagicMock()
+    embedder.embed_text.return_value = fake_embedding(99)  # unrelated to both docs
+
+    with patch("needlestack.search._expand_query", return_value=["zzz_no_match_zzz"]):
+        results = search("zzz_no_match_zzz", s, embedder)
+    assert results == []
+    s.close()
+
+
 # --- MIN_SCORE boundary: >= not > ---
 
 def test_min_score_boundary_is_gte_not_gt(tmp_path):
@@ -229,13 +274,13 @@ def test_search_with_empty_preexpanded_terms(tmp_path):
 
 def test_expand_query_domains_empty_list_falls_back_to_railroad():
     """Empty list is falsy → same RAILROAD fallback as domains=None. Pinned explicitly."""
-    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+    with patch("needlestack.search.httpx.post", side_effect=httpx.TimeoutException("timeout")):
         result = _expand_query("caboose", domains=[])
     assert "waycar" in result  # RAILROAD synonyms included via fallback
 
 
 def test_expand_query_domains_none_falls_back_to_railroad():
-    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+    with patch("needlestack.search.httpx.post", side_effect=httpx.TimeoutException("timeout")):
         result = _expand_query("caboose", domains=None)
     assert "waycar" in result
 
@@ -297,7 +342,7 @@ def test_expand_query_with_truncation_reports_false_when_not_capped():
 
 def test_expand_query_multi_domain_unions_synonyms():
     """BIRDS synonyms for 'raptor' appear when BIRDS domain is included."""
-    with patch("needlestack.search.httpx.post", side_effect=Exception("timeout")):
+    with patch("needlestack.search.httpx.post", side_effect=httpx.TimeoutException("timeout")):
         railroad_only = _expand_query("raptor", domains=[taxonomy.RAILROAD])
         both_domains  = _expand_query("raptor", domains=[taxonomy.RAILROAD, taxonomy.BIRDS])
     assert "hawk" not in railroad_only   # RAILROAD has no raptor synonyms
@@ -308,11 +353,21 @@ def test_expand_query_multi_domain_unions_synonyms():
 
 def test_expand_query_logs_warning_on_failure(caplog):
     import logging
-    with patch("needlestack.search.httpx.post", side_effect=Exception("conn refused")):
+    with patch("needlestack.search.httpx.post", side_effect=httpx.ConnectError("conn refused")):
         with caplog.at_level(logging.WARNING, logger="needlestack.search"):
             result = _expand_query("caboose")
     assert result[0] == "caboose"
     assert any("expansion failed" in r.message.lower() for r in caplog.records)
+
+
+def test_expand_query_raw_does_not_swallow_unexpected_bug():
+    """Regression: the bare `except Exception` used to catch everything,
+    including a genuine bug in this function's own code, and silently degrade
+    it to "Ollama must be down." Narrowed to httpx/KeyError/ValueError so an
+    unrelated exception type propagates instead of being misdiagnosed."""
+    with patch("needlestack.search.httpx.post", side_effect=RuntimeError("not a network error")):
+        with pytest.raises(RuntimeError):
+            _expand_query("caboose")
 
 
 def test_expand_query_logs_warning_on_done_reason_length(caplog):
@@ -383,3 +438,39 @@ def test_score_merge_pins_weights_and_missing_side_defaults(tmp_path):
     # fts_only: FTS norm 1.0 (sole match, tie-break) + CLIP-absent default (excluded row).
     assert by_path["/fts_only.jpg"] == round(CLIP_WEIGHT * 0.0 + FTS_WEIGHT * 1.0, 4)
     s.close()
+
+
+# --- _normalize_fts_ranks ---
+
+def test_normalize_fts_ranks_tied_case_maps_to_one():
+    result = _normalize_fts_ranks(np.array([-5.0, -5.0, -5.0]))
+    assert (result == 1.0).all()
+
+
+def test_normalize_fts_ranks_single_row_maps_to_one():
+    result = _normalize_fts_ranks(np.array([-3.2]))
+    assert result[0] == pytest.approx(1.0)
+
+
+def test_normalize_fts_ranks_best_rank_scores_highest():
+    # More negative BM25 rank = better match; best rank must normalize to 1.0,
+    # worst to 0.0, in between preserving relative order.
+    result = _normalize_fts_ranks(np.array([-10.0, -5.0, -1.0]))
+    assert result[0] == pytest.approx(1.0)
+    assert result[2] == pytest.approx(0.0)
+    assert result[0] > result[1] > result[2]
+
+
+# --- search(): missing result IDs are logged, not silently dropped ---
+
+def test_search_logs_warning_when_scored_id_missing_from_store(populated_store, caplog):
+    """Regression: an id scored by CLIP/FTS but absent from store.get_by_ids
+    (e.g. a row deleted between scoring and lookup) silently shrank the result
+    count with no signal anywhere why."""
+    import logging
+    with patch("needlestack.search._expand_query", return_value=["caboose"]):
+        with patch.object(populated_store, "get_by_ids", return_value=[]):
+            with caplog.at_level(logging.WARNING, logger="needlestack.search"):
+                results = search("caboose", populated_store, mock_embedder(1))
+    assert results == []
+    assert any("not found in store.get_by_ids" in r.message for r in caplog.records)
