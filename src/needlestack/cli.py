@@ -18,6 +18,15 @@ UI_PATH = Path(__file__).parent / "ui"
 console = Console()
 
 
+def _check_model_preset_exclusive(model: str | None, preset: str | None) -> None:
+    """--model and --preset are mutually exclusive; shared by `index` and `serve`
+    so the check (and its message) can't drift between the two commands the way
+    two hand-copied checks previously could."""
+    if model and preset:
+        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
+        sys.exit(1)
+
+
 @click.group()
 @click.version_option(package_name="needlestack")
 def main() -> None:
@@ -25,7 +34,10 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True, path_type=Path),
+)
 @click.option("--db", default=str(DEFAULT_DB), show_default=True, help="Index database path")
 @click.option("--model", default=None, help="Ollama vision model (overrides --preset)")
 @click.option("--preset", default=None,
@@ -46,9 +58,7 @@ def index(directory: Path, db: str, model: str | None, preset: str | None,
     from .store import Store
     from needlestack_core.taxonomy import get_domain
 
-    if model and preset:
-        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
-        sys.exit(1)
+    _check_model_preset_exclusive(model, preset)
     resolved_model = model or MODEL_PRESETS.get(preset or "", DEFAULT_MODEL)
     selected_domain = get_domain(domain)
     captioner = Captioner(model=resolved_model, base_url=ollama, domain=selected_domain)
@@ -136,9 +146,7 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
     from .server import app, close as close_server, init
     from .store import Store
 
-    if model and preset:
-        console.print("[red]Error:[/red] --model and --preset are mutually exclusive.")
-        sys.exit(1)
+    _check_model_preset_exclusive(model, preset)
 
     db_path = Path(db)
     setup_mode = not db_path.exists()
@@ -184,8 +192,12 @@ def serve(db: str, port: int, model: str | None, preset: str | None,
 
     if not _port_free(port):
         try:
-            resp = _httpx.get(f"http://127.0.0.1:{port}/", timeout=2.0)
-            if "needlestack" in resp.text.lower():
+            # Typed signal (/api/health's JSON body), not a substring match
+            # against the rendered "/" HTML page -- the producer is this same
+            # app, fully able to emit a structured identity check instead of
+            # relying on "does the page happen to mention our name."
+            resp = _httpx.get(f"http://127.0.0.1:{port}/api/health", timeout=2.0)
+            if resp.json().get("app") == "needlestack":
                 console.print(f"[dim]needlestack already running on port {port} — opening browser.[/dim]")
                 webbrowser.open(f"http://localhost:{port}")
                 return

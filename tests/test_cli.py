@@ -275,9 +275,10 @@ def test_serve_port_free_starts_uvicorn(tmp_path):
 
 
 def test_serve_port_in_use_needlestack_running_opens_browser(tmp_path):
-    """Port in use + it's already needlestack → open browser, no uvicorn."""
+    """Port in use + it's already needlestack (per /api/health) → open browser,
+    no uvicorn."""
     mock_resp = MagicMock()
-    mock_resp.text = "needlestack photo search"   # contains "needlestack"
+    mock_resp.json.return_value = {"app": "needlestack"}
     db_path, patches = _serve_patches(tmp_path, in_use_ports={8484}, httpx_resp=mock_resp)
     r = runner()
     with patches[0], patches[1], patches[2], patches[3] as mock_uvicorn, patches[4] as mock_browser, patches[5]:
@@ -285,6 +286,20 @@ def test_serve_port_in_use_needlestack_running_opens_browser(tmp_path):
     assert result.exit_code == 0
     mock_uvicorn.assert_not_called()
     mock_browser.assert_called_once()
+
+
+def test_serve_port_in_use_other_app_health_json_not_mistaken_for_needlestack(tmp_path):
+    """A different app happening to own the port and returning its own JSON
+    health body must not be mistaken for needlestack -- exact field match, not
+    presence of a response at all."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"status": "ok", "service": "some-other-app"}
+    db_path, patches = _serve_patches(tmp_path, in_use_ports={8484}, httpx_resp=mock_resp)
+    r = runner()
+    with patches[0], patches[1], patches[2], patches[3] as mock_uvicorn, patches[4], patches[5]:
+        result = r.invoke(main, ["serve", "--db", str(db_path), "--no-browser"])
+    assert result.exit_code == 0
+    assert mock_uvicorn.call_args.kwargs["port"] != 8484
 
 
 def test_serve_port_in_use_different_process_finds_next_free(tmp_path):

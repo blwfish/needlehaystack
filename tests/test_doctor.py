@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from needlestack.doctor import run
 from needlestack.store import Store
+from needlestack_core.embedder import Embedder
 
 
 # --- helpers ---
@@ -41,7 +42,7 @@ def _make_populated_store(db_path: Path) -> None:
     s.upsert(
         "/photos/train.jpg", "hash1",
         "A steam locomotive at a depot.",
-        np.zeros(512, dtype=np.float32), b"thumb",
+        np.zeros(Embedder.dim, dtype=np.float32), b"thumb",
         reporting_marks="ATSF", equipment="steam locomotive",
         is_railroad=1, caption_version="v1",
     )
@@ -199,6 +200,22 @@ def test_test_inference_no_latency_row_when_absent(tmp_path):
     assert "Test inference latency" not in report
 
 
+def test_test_inference_latency_row_shown_for_zero_duration(tmp_path):
+    """Regression: `if total_duration_ns:` treated a legitimate 0 the same as
+    "field absent," silently hiding a real (if implausibly fast) measurement."""
+    tags = _tags_resp(["qwen2.5vl:7b"])
+    gen = MagicMock()
+    gen.raise_for_status.return_value = None
+    gen.json.return_value = {"response": "OK", "total_duration": 0}
+    with (
+        patch("httpx.get", return_value=tags),
+        patch("httpx.post", return_value=gen),
+    ):
+        report = run(db_path=tmp_path / "missing.db", ollama_model="qwen2.5vl:7b")
+    assert "Test inference latency" in report
+    assert "0.00s" in report
+
+
 def test_test_inference_failure(tmp_path):
     tags = _tags_resp(["qwen2.5vl:7b"])
     with (
@@ -228,7 +245,7 @@ def test_query_trace_expansion_failure(tmp_path):
     Store(db_path).close()
 
     mock_embedder = MagicMock()
-    mock_embedder.embed_text.return_value = np.zeros(512, dtype=np.float32)
+    mock_embedder.embed_text.return_value = np.zeros(Embedder.dim, dtype=np.float32)
 
     with (
         patch("needlestack.doctor._expand_query", side_effect=RuntimeError("boom")),
@@ -265,7 +282,7 @@ def test_query_trace_empty_index_no_crash(tmp_path):
     Store(db_path).close()
 
     mock_embedder = MagicMock()
-    mock_embedder.embed_text.return_value = np.zeros(512, dtype=np.float32)
+    mock_embedder.embed_text.return_value = np.zeros(Embedder.dim, dtype=np.float32)
 
     tags, gen = _ollama_ok(["qwen2.5vl:7b"])
     with (
@@ -305,7 +322,7 @@ def test_domain_row_reflects_indexed_domain(tmp_path):
 def test_vocabulary_section_uses_indexed_domain_not_railroad(tmp_path):
     db_path = tmp_path / "index.db"
     s = Store(db_path)
-    s.upsert("/p/bird.jpg", "h", "a red-tailed hawk soaring", np.zeros(512, dtype=np.float32), b"t")
+    s.upsert("/p/bird.jpg", "h", "a red-tailed hawk soaring", np.zeros(Embedder.dim, dtype=np.float32), b"t")
     s.add_root("/p", "birds")
     s.close()
     with patch("httpx.get", side_effect=Exception("down")):
@@ -317,7 +334,7 @@ def test_vocabulary_section_uses_indexed_domain_not_railroad(tmp_path):
 def test_vocabulary_section_multi_domain_shows_each(tmp_path):
     db_path = tmp_path / "index.db"
     s = Store(db_path)
-    s.upsert("/p/a.jpg", "h1", "a caboose", np.zeros(512, dtype=np.float32), b"t")
+    s.upsert("/p/a.jpg", "h1", "a caboose", np.zeros(Embedder.dim, dtype=np.float32), b"t")
     s.add_root("/p/rr", "railroad")
     s.add_root("/p/naval", "naval")
     s.close()
@@ -351,7 +368,7 @@ def test_query_expansion_trace_passes_indexed_domain(tmp_path):
 def test_corrupt_embeddings_reported(tmp_path):
     db_path = tmp_path / "index.db"
     s = Store(db_path)
-    s.upsert("/p/a.jpg", "h1", "a caboose", np.zeros(512, dtype=np.float32), b"t")
+    s.upsert("/p/a.jpg", "h1", "a caboose", np.zeros(Embedder.dim, dtype=np.float32), b"t")
     s.conn.execute("UPDATE images SET embedding = ? WHERE path = '/p/a.jpg'", (b"garbage",))
     s.conn.commit()
     s.close()

@@ -8,7 +8,9 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, MODEL_PRESETS
+from needlestack_core.constants import (
+    DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, MODEL_PRESETS, model_names_from_tags_response,
+)
 from .search import MIN_SCORE, _expand_query, _fts_query, _normalize_clip
 
 
@@ -41,13 +43,9 @@ def run(
 
     try:
         import torch
-        device = (
-            "mps" if torch.backends.mps.is_available()
-            else "cuda" if torch.cuda.is_available()
-            else "cpu"
-        )
+        from needlestack_core.embedder import Embedder
         _row(out, "PyTorch", torch.__version__)
-        _row(out, "Compute device", device)
+        _row(out, "Compute device", Embedder.detect_device())
     except ImportError:
         _row(out, "PyTorch", "NOT FOUND")
 
@@ -56,7 +54,7 @@ def run(
     try:
         resp = httpx.get(f"{ollama_url}/api/tags", timeout=5.0)
         resp.raise_for_status()
-        models = [m["name"] for m in resp.json().get("models", [])]
+        models = model_names_from_tags_response(resp.json())
         _row(out, "Ollama URL", ollama_url)
         _row(out, "Status", "running")
         _row(out, "Models available", ", ".join(models) or "none")
@@ -90,7 +88,7 @@ def run(
         # for per-photo captioning cost (this prompt is trivial and has no image),
         # but a live data point where previously none was reported at all.
         total_duration_ns = data.get("total_duration")
-        if total_duration_ns:
+        if total_duration_ns is not None:
             _row(out, "  Test inference latency", f"{total_duration_ns / 1e9:.2f}s (trivial text prompt)")
     except Exception as e:
         _row(out, "Test inference", f"FAILED — {e}")
@@ -180,9 +178,13 @@ def run(
                 out.write("\n  FTS5 matches (before score threshold):\n")
                 fts_rows = store.fts_search(fts_q, limit=20)
                 if fts_rows:
-                    for image_id, path, rank in fts_rows[:10]:
-                        rows2 = store.get_by_ids([image_id])
-                        caption = rows2[0]["caption"][:120] if rows2 else ""
+                    top_fts = fts_rows[:10]
+                    # One batched lookup instead of one get_by_ids call per row
+                    # (get_by_ids already supports WHERE id IN (...) for this).
+                    by_id = {r["id"]: r for r in store.get_by_ids([iid for iid, _, _ in top_fts])}
+                    for image_id, path, rank in top_fts:
+                        row = by_id.get(image_id)
+                        caption = row["caption"][:120] if row else ""
                         out.write(f"    [{rank:+.2f}] {Path(path).name}\n")
                         out.write(f"           {caption}\n")
                 else:
@@ -200,9 +202,10 @@ def run(
                         raw = (matrix @ query_vec).astype(float)
                         norm = _normalize_clip(raw)
                         top_idx = np.argsort(raw)[::-1][:5]
+                        by_id = {r["id"]: r for r in store.get_by_ids([ids[i] for i in top_idx])}
                         for i in top_idx:
-                            rows2 = store.get_by_ids([ids[i]])
-                            caption = rows2[0]["caption"][:100] if rows2 else ""
+                            row = by_id.get(ids[i])
+                            caption = row["caption"][:100] if row else ""
                             out.write(f"    [{norm[i]:.3f}] {Path(paths[i]).name}\n")
                             out.write(f"           {caption}\n")
                     else:

@@ -7,6 +7,7 @@ import needlestack.server as srv
 from needlestack.server import app
 from needlestack_core import taxonomy
 from needlestack_core.constants import DEFAULT_MODEL, OLLAMA_URL
+from needlestack_core.embedder import Embedder
 
 
 def _reset_server_globals():
@@ -40,7 +41,7 @@ def client_with_store(tmp_path):
     (tmp_path / "index.html").write_text("<html>index</html>")
     store = Store(tmp_path / "index.db")
     embedder = MagicMock()
-    embedder.embed_text.return_value = np.zeros(512, dtype=np.float32)
+    embedder.embed_text.return_value = np.zeros(Embedder.dim, dtype=np.float32)
     srv._index_state = srv._IndexState()
     srv._index_state.done = True  # skip setup redirect
     srv.init(store=store, embedder=embedder, ui_path=tmp_path,
@@ -95,13 +96,59 @@ def test_start_indexing_rejects_empty_folder_string(client_no_store):
     assert resp.status_code == 400
 
 
+def test_start_indexing_rejects_unknown_domain(tmp_path, client_no_store):
+    resp = client_no_store.post(
+        "/api/setup/start", json={"folder": str(tmp_path), "domain": "not-a-real-domain"}
+    )
+    assert resp.status_code == 400
+    assert "not-a-real-domain" in resp.json()["detail"]
+
+
+# --- SearchRequest bounds ---
+
+def test_search_rejects_query_over_max_length(client_with_store):
+    client, _ = client_with_store
+    resp = client.post("/search", json={"query": "x" * 501})
+    assert resp.status_code == 422
+
+
+def test_search_rejects_negative_limit(client_with_store):
+    client, _ = client_with_store
+    resp = client.post("/search", json={"query": "caboose", "limit": -1})
+    assert resp.status_code == 422
+
+
+def test_search_rejects_zero_limit(client_with_store):
+    client, _ = client_with_store
+    resp = client.post("/search", json={"query": "caboose", "limit": 0})
+    assert resp.status_code == 422
+
+
+def test_search_rejects_limit_over_max(client_with_store):
+    client, _ = client_with_store
+    resp = client.post("/search", json={"query": "caboose", "limit": 501})
+    assert resp.status_code == 422
+
+
+def test_search_rejects_too_many_terms(client_with_store):
+    client, _ = client_with_store
+    resp = client.post("/search", json={"query": "caboose", "terms": ["x"] * 51})
+    assert resp.status_code == 422
+
+
+def test_start_indexing_rejects_folder_over_max_length(client_no_store):
+    resp = client_no_store.post("/api/setup/start", json={"folder": "/x" * 3000})
+    assert resp.status_code == 422
+
+
 # --- progress endpoint ---
 
 def test_progress_endpoint_returns_expected_fields(client_no_store):
     resp = client_no_store.get("/api/setup/progress")
     assert resp.status_code == 200
     data = resp.json()
-    for field in ("running", "done", "error", "total", "indexed", "skipped", "failed", "current"):
+    for field in ("running", "done", "error", "total", "indexed", "skipped", "failed",
+                  "current", "skipped_roots"):
         assert field in data
 
 
@@ -114,6 +161,42 @@ def test_search_returns_empty_list_for_blank_query(client_with_store):
     assert resp.json() == []
 
 
+def test_search_response_shape(client_with_store, monkeypatch):
+    """Regression: /search's response shape (id/path/caption/score/thumbnail)
+    had no shape-assertion test, unlike /api/setup/progress which has one --
+    server.py's dict comprehension silently dropping or renaming a field would
+    have passed every other test in this file."""
+    client, store = client_with_store
+    fake_result = [{
+        "id": 1, "path": "/photos/a.jpg", "caption": "a caboose",
+        "score": 0.91, "thumbnail": b"thumb-bytes",
+    }]
+    monkeypatch.setattr(srv.search_module, "search", lambda *a, **k: fake_result)
+    resp = client.post("/search", json={"query": "caboose"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    r = body[0]
+    assert set(r.keys()) == {"id", "path", "caption", "score", "thumbnail"}
+    assert r["id"] == 1
+    assert r["path"] == "/photos/a.jpg"
+    assert r["caption"] == "a caboose"
+    assert r["score"] == 0.91
+    import base64
+    assert base64.b64decode(r["thumbnail"]) == b"thumb-bytes"
+
+
+def test_search_response_thumbnail_null_when_absent(client_with_store, monkeypatch):
+    client, store = client_with_store
+    fake_result = [{
+        "id": 1, "path": "/photos/a.jpg", "caption": "a caboose",
+        "score": 0.5, "thumbnail": None,
+    }]
+    monkeypatch.setattr(srv.search_module, "search", lambda *a, **k: fake_result)
+    resp = client.post("/search", json={"query": "caboose"})
+    assert resp.json()[0]["thumbnail"] is None
+
+
 def test_thumbnail_returns_404_for_missing_id(client_with_store):
     client, _ = client_with_store
     resp = client.get("/thumbnail/99999")
@@ -124,6 +207,14 @@ def test_open_returns_404_for_missing_id(client_with_store):
     client, _ = client_with_store
     resp = client.post("/open/99999")
     assert resp.status_code == 404
+
+
+def test_health_endpoint_returns_typed_identity(client_no_store):
+    """cli.py's port-in-use check consumes this instead of substring-matching
+    the "/" HTML page."""
+    resp = client_no_store.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"app": "needlestack"}
 
 
 # --- setup.html domain options: generated from taxonomy.DOMAINS, not hand-typed ---
@@ -333,9 +424,10 @@ def test_sync_status_no_stale_when_current(client_with_store, tmp_path):
     root.mkdir()
     store.set_config("indexed_root", str(root))
     from needlestack_core.constants import caption_version
+    from needlestack_core import taxonomy
     store.upsert(
         str(root / "a.jpg"), "h", "a fresh caption", np.zeros(512, dtype=np.float32),
-        b"t", caption_version=caption_version(srv._ollama_model),
+        b"t", caption_version=caption_version(srv._ollama_model, taxonomy.RAILROAD.name),
     )
     resp = client.get("/api/sync-status")
     assert resp.json()["stale"] == 0
@@ -394,6 +486,48 @@ def test_browse_folder_returns_path_on_success(monkeypatch):
     import asyncio
     result = asyncio.run(srv.browse_folder())
     assert result == {"path": "/Users/me/Photos"}
+
+
+def test_browse_folder_windows_cancel_exits_nonzero_not_misreported_as_error(monkeypatch):
+    """Regression: the PowerShell script only wrote SelectedPath on 'OK' and
+    otherwise exited 0 with empty stdout, indistinguishable from the "dialog
+    claimed success but gave no path" error case -- every Windows cancel was
+    misreported as an error. The script must now exit 1 on cancel, like
+    macOS's osascript does, so the shared returncode-based check applies."""
+    import sys as _sys
+    monkeypatch.setattr(_sys, "platform", "win32")
+    fake_result = MagicMock(stdout="", returncode=1, stderr="")
+    monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: fake_result)
+    import asyncio
+    result = asyncio.run(srv.browse_folder())
+    assert result == {"cancelled": True}
+
+
+def test_browse_folder_windows_powershell_script_exits_nonzero_on_cancel(monkeypatch):
+    """Pins the actual script content (subprocess.run is mocked in every other
+    test here, so nothing else would catch this script string regressing)."""
+    import sys as _sys
+    captured = {}
+
+    def _fake_run(args, **kwargs):
+        captured["script"] = args[-1]
+        return MagicMock(stdout="", returncode=1, stderr="")
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    monkeypatch.setattr(srv.subprocess, "run", _fake_run)
+    import asyncio
+    asyncio.run(srv.browse_folder())
+    assert "else { exit 1 }" in captured["script"]
+
+
+def test_browse_folder_windows_success_still_returns_path(monkeypatch):
+    import sys as _sys
+    monkeypatch.setattr(_sys, "platform", "win32")
+    fake_result = MagicMock(stdout="C:\\Users\\me\\Photos\n", returncode=0, stderr="")
+    monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: fake_result)
+    import asyncio
+    result = asyncio.run(srv.browse_folder())
+    assert result == {"path": "C:\\Users\\me\\Photos"}
 
 
 def test_browse_folder_unsupported_platform(monkeypatch):
@@ -522,3 +656,43 @@ def test_start_indexing_and_reindex_all_both_use_shared_loop(
     assert resp.json()["status"] == "started"
     _wait_for_index_done_or_error()
     assert calls == ["shared_loop", "shared_loop"]
+
+
+# --- _run_indexing_loop: missing roots, error context ---
+
+def test_run_indexing_loop_counts_skipped_missing_roots(tmp_path, monkeypatch):
+    """Regression: a configured root that no longer exists on disk was silently
+    `continue`d past with no signal anywhere that it was skipped."""
+    srv._index_state = srv._IndexState()
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    roots = [
+        {"path": str(tmp_path / "does-not-exist"), "domain": "railroad"},
+        {"path": str(real_root), "domain": "railroad"},
+    ]
+
+    mock_captioner = MagicMock()
+    mock_captioner.check.return_value = (True, "ok")
+    monkeypatch.setattr("needlestack_core.captioner.Captioner", MagicMock(return_value=mock_captioner))
+    monkeypatch.setattr("needlestack.indexer.index_directory", lambda *a, **k: (1, 0, 0))
+
+    srv._run_indexing_loop(roots, MagicMock(), OLLAMA_URL, DEFAULT_MODEL, MagicMock())
+    assert srv._index_state.skipped_roots == 1
+
+
+def test_run_indexing_loop_error_includes_root_context(tmp_path, monkeypatch):
+    """Regression: a captioner.check() failure's message had no indication of
+    which root/domain it happened for when a database indexes multiple roots."""
+    srv._index_state = srv._IndexState()
+    root = tmp_path / "photos"
+    root.mkdir()
+    roots = [{"path": str(root), "domain": "naval"}]
+
+    mock_captioner = MagicMock()
+    mock_captioner.check.return_value = (False, "Ollama not reachable")
+    monkeypatch.setattr("needlestack_core.captioner.Captioner", MagicMock(return_value=mock_captioner))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        srv._run_indexing_loop(roots, MagicMock(), OLLAMA_URL, DEFAULT_MODEL, MagicMock())
+    assert str(root) in str(exc_info.value)
+    assert "naval" in str(exc_info.value)

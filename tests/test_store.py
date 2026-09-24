@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from pathlib import Path
 from needlestack.store import Store, _enc, _dec
+from needlestack_core.embedder import Embedder
 
 
 @pytest.fixture
@@ -14,11 +15,22 @@ def store(tmp_path):
 
 def fake_embedding(seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    v = rng.standard_normal(512).astype(np.float32)
+    v = rng.standard_normal(Embedder.dim).astype(np.float32)
     return v / np.linalg.norm(v)
 
 
 # --- embedding codec ---
+
+def test_store_init_rejects_unsafe_sqlite_threadsafety(tmp_path, monkeypatch):
+    """Store shares one Connection (check_same_thread=False) across threads --
+    safe only when SQLite was compiled 'serialized' (threadsafety==3). This must
+    be verified at construction time, not assumed, since it depends on how the
+    platform's SQLite library was built."""
+    import sqlite3
+    monkeypatch.setattr(sqlite3, "threadsafety", 1)
+    with pytest.raises(RuntimeError, match="threadsafety"):
+        Store(tmp_path / "unsafe.db")
+
 
 def test_embedding_roundtrip():
     arr = fake_embedding()
@@ -35,18 +47,18 @@ def test_embedding_roundtrip_preserves_norm():
 
 def test_upsert_and_get_hash(store):
     store.upsert("/a/b.jpg", "hash1", "a red boxcar", fake_embedding(), b"thumb")
-    assert store.get_hash("/a/b.jpg") == "hash1"
+    assert store.get_hash_and_version("/a/b.jpg")[0] == "hash1"
 
 
 def test_get_hash_missing(store):
-    assert store.get_hash("/nonexistent.jpg") is None
+    assert store.get_hash_and_version("/nonexistent.jpg")[0] is None
 
 
 def test_upsert_updates_existing(store):
     emb = fake_embedding()
     store.upsert("/a/b.jpg", "hash1", "old caption", emb, b"thumb")
     store.upsert("/a/b.jpg", "hash2", "new caption", emb, b"thumb2")
-    assert store.get_hash("/a/b.jpg") == "hash2"
+    assert store.get_hash_and_version("/a/b.jpg")[0] == "hash2"
     rows = store.get_by_ids(
         [store.conn.execute("SELECT id FROM images WHERE path='/a/b.jpg'").fetchone()[0]]
     )
@@ -71,7 +83,7 @@ def test_all_embeddings_empty(store):
     ids, paths, matrix = store.all_embeddings()
     assert ids == []
     assert paths == []
-    assert matrix.shape == (0, 512)
+    assert matrix.shape == (0, Embedder.dim)
 
 
 def test_all_embeddings_returns_correct_shape(store):
@@ -80,7 +92,7 @@ def test_all_embeddings_returns_correct_shape(store):
     ids, paths, matrix = store.all_embeddings()
     assert len(ids) == 3
     assert len(paths) == 3
-    assert matrix.shape == (3, 512)
+    assert matrix.shape == (3, Embedder.dim)
 
 
 def test_all_embeddings_preserves_values(store):
@@ -88,6 +100,39 @@ def test_all_embeddings_preserves_values(store):
     store.upsert("/x.jpg", "hx", "caption", emb, b"t")
     ids, paths, matrix = store.all_embeddings()
     assert np.allclose(matrix[0], emb, atol=1e-6)
+
+
+def test_all_embeddings_mixed_corrupt_and_valid_stay_aligned(store, caplog):
+    """Regression: all_embeddings() was only ever tested with all-valid or
+    fully-empty rows; a mix of one corrupt blob among valid ones is exactly
+    where an id/path/matrix-row alignment bug (an off-by-one from skipping the
+    corrupt row inconsistently across the three parallel lists) would hide."""
+    import logging
+    emb_a = fake_embedding(1)
+    emb_b = fake_embedding(2)
+    emb_c = fake_embedding(3)
+    store.upsert("/a.jpg", "h1", "caption a", emb_a, b"t")
+    store.upsert("/b.jpg", "h2", "caption b", emb_b, b"t")  # will be corrupted below
+    store.upsert("/c.jpg", "h3", "caption c", emb_c, b"t")
+    store.conn.execute(
+        "UPDATE images SET embedding = ? WHERE path = ?", (b"not-a-valid-npy-blob", "/b.jpg")
+    )
+    store.conn.commit()
+    store._embedding_cache = None
+
+    with caplog.at_level(logging.WARNING, logger="needlestack.store"):
+        ids, paths, matrix = store.all_embeddings()
+
+    assert len(ids) == 2
+    assert len(paths) == 2
+    assert matrix.shape == (2, Embedder.dim)
+    assert "/b.jpg" not in paths
+    by_path = dict(zip(paths, matrix))
+    assert np.allclose(by_path["/a.jpg"], emb_a, atol=1e-6)
+    assert np.allclose(by_path["/c.jpg"], emb_c, atol=1e-6)
+    # Summary log makes the skip visible from this one call, not just the
+    # per-row warning _try_dec already logs.
+    assert any("skipped 1 corrupt embedding" in r.message for r in caplog.records)
 
 
 # --- fts_search ---
@@ -182,6 +227,33 @@ def test_get_roots_returns_empty_on_malformed_json(store):
     assert roots == []
 
 
+def test_get_roots_is_cached_across_calls(store):
+    """Regression: get_roots() re-read and re-JSON-parsed indexed_roots from
+    config on every call (every /search and /expand request), despite the data
+    only changing via set_roots()/add_root()."""
+    store.add_root("/photos", "railroad")
+    first = store.get_roots()
+    second = store.get_roots()
+    assert first is second  # same cached object, not re-parsed
+
+
+def test_get_roots_cache_invalidated_by_add_root(store):
+    store.add_root("/photos", "railroad")
+    store.get_roots()  # populate cache
+    store.add_root("/more-photos", "naval")
+    assert store.get_roots() == [
+        {"path": "/photos", "domain": "railroad"},
+        {"path": "/more-photos", "domain": "naval"},
+    ]
+
+
+def test_get_roots_cache_invalidated_by_set_roots(store):
+    store.set_roots([{"path": "/a", "domain": "railroad"}])
+    store.get_roots()  # populate cache
+    store.set_roots([{"path": "/b", "domain": "naval"}])
+    assert store.get_roots() == [{"path": "/b", "domain": "naval"}]
+
+
 def test_set_and_get_config(store):
     store.set_config("indexed_root", "/photos")
     assert store.get_config("indexed_root") == "/photos"
@@ -253,7 +325,13 @@ def test_remove_missing_deletes_nonexistent_paths(store, tmp_path):
     real = tmp_path / "real.jpg"
     real.write_bytes(b"x")
     store.upsert(str(real), "h1", "caption", fake_embedding(), b"t")
-    store.upsert("/nonexistent/ghost.jpg", "h2", "caption", fake_embedding(1), b"t")
+    # Genuinely absolute on every platform (derived from tmp_path, not a
+    # hardcoded POSIX literal) -- a bare "/nonexistent/..." string is NOT
+    # Path.is_absolute() on Windows without a drive letter, which made this
+    # test fail on Windows CI once remove_missing() started requiring
+    # is_absolute() as part of the relative-path data-loss guard.
+    ghost = tmp_path / "nonexistent" / "ghost.jpg"
+    store.upsert(str(ghost), "h2", "caption", fake_embedding(1), b"t")
     assert store.count() == 2
 
     removed = store.remove_missing()
@@ -272,6 +350,39 @@ def test_remove_missing_keeps_existing_files(store, tmp_path):
 
 def test_remove_missing_empty_index(store):
     assert store.remove_missing() == 0
+
+
+def test_remove_missing_does_not_delete_on_path_exists_oserror(store, tmp_path, monkeypatch):
+    """Regression: Path.exists() raising an OS-level error (encoding issue,
+    permission denial, unmounted share) is not proof the file is gone -- it
+    must not propagate and abort the whole batch, and must not be treated as
+    "missing" either."""
+    from pathlib import Path
+    # tmp_path is genuinely absolute on every platform -- a hardcoded POSIX
+    # literal like "/some/absolute/path.jpg" is NOT Path.is_absolute() on
+    # Windows without a drive letter, which would make this test pass via the
+    # is_absolute() short-circuit instead of actually exercising the OSError
+    # path it's meant to test.
+    p = str(tmp_path / "some" / "absolute" / "path.jpg")
+    store.upsert(p, "h1", "caption", fake_embedding(), b"t")
+
+    def _raise(self):
+        raise OSError("simulated stat failure")
+
+    monkeypatch.setattr(Path, "exists", _raise)
+    assert store.count_missing() == 0
+    assert store.remove_missing() == 0
+    assert store.count() == 1
+
+
+def test_remove_missing_does_not_delete_unverifiable_relative_paths(store):
+    """A relative stored path (only possible from a pre-fix database -- indexing
+    now always stores absolute paths) can't be safely judged missing from an
+    arbitrary process cwd, so it must never be silently deleted."""
+    store.upsert("relative/ghost.jpg", "h1", "caption", fake_embedding(), b"t")
+    assert store.count_missing() == 0
+    assert store.remove_missing() == 0
+    assert store.count() == 1
 
 
 # --- count_unindexed ---
@@ -330,7 +441,7 @@ def test_embedding_cache_repopulates_after_invalidation(store):
 
     ids, _paths, matrix = store.all_embeddings()
     assert len(ids) == 2
-    assert matrix.shape == (2, 512)
+    assert matrix.shape == (2, Embedder.dim)
 
 
 # --- structured columns + caption_version ---
@@ -346,7 +457,7 @@ def test_upsert_roundtrips_structured_fields(store):
         "FROM images WHERE path='/a.jpg'"
     ).fetchone()
     assert row == ("ATSF 3751", "steam locomotive Santa Fe", '{"era":"steam"}', 1, "m:v2")
-    assert store.get_caption_version("/a.jpg") == "m:v2"
+    assert store.get_hash_and_version("/a.jpg")[1] == "m:v2"
 
 
 def test_upsert_roundtrips_exif_json(store):
@@ -360,7 +471,7 @@ def test_get_exif_missing(store):
 
 
 def test_get_caption_version_missing(store):
-    assert store.get_caption_version("/nope.jpg") is None
+    assert store.get_hash_and_version("/nope.jpg")[1] is None
 
 
 def test_get_hash_and_version_combined(store):
@@ -440,7 +551,7 @@ def test_migrate_upgrades_old_db(tmp_path):
     assert s.count() == 1
     assert s.fts_search('"caboose"')[0][1] == "/old.jpg"
     # Old row has no caption_version → counts as stale, triggering re-caption later.
-    assert s.get_caption_version("/old.jpg") is None
+    assert s.get_hash_and_version("/old.jpg")[1] is None
     assert s.count_stale_captions("m:v2") == 1
     s.close()
 

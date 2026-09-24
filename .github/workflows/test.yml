@@ -28,6 +28,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      - name: Cache CLIP model weights
+        # needlestack-core's real (non-mocked) Embedder tests load the actual
+        # ViT-B-32/openai CLIP checkpoint via open_clip -> HuggingFace Hub; cache
+        # it so every run doesn't re-download ~350MB.
+        uses: actions/cache@v4
+        with:
+          path: ~\.cache\huggingface
+          key: ${{ runner.os }}-clip-vit-b-32-openai
+
       - name: Install CPU-only PyTorch
         # Install torch before the rest so pip sees it as already satisfied
         # and doesn't pull the large CUDA build when resolving open-clip-torch.

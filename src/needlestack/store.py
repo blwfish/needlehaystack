@@ -122,15 +122,36 @@ def _try_dec(blob: bytes, path: str) -> np.ndarray | None:
 class Store:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False: WAL mode is safe for concurrent reads from
-        # multiple threads; the background indexing thread hands the Store to
-        # the uvicorn thread after indexing completes.
+        # check_same_thread=False: server.py's /search and /thumbnail run on the
+        # event-loop thread while /api/sync-status offloads count_missing() to a
+        # separate worker thread via asyncio.to_thread -- both genuinely touch
+        # this same Connection object from different OS threads, concurrently.
+        # This is safe ONLY because sqlite3.threadsafety == 3 (SQLite compiled
+        # "serialized": the C library itself is safe for concurrent multi-thread
+        # use of one connection) -- verified below rather than assumed, since
+        # that depends on how the platform's SQLite library was built and isn't
+        # guaranteed across all Python/SQLite distributions. It covers concurrent
+        # *reads* only: server.py deliberately never writes through this shared
+        # connection from a background thread -- reindex_all/start_indexing open
+        # their own separate writer Store/connection instead, so this connection
+        # only ever has one writer (the main thread that constructed it) and
+        # WAL's documented multi-connection model handles that writer's commits
+        # becoming visible to this connection's next read.
+        if sqlite3.threadsafety < 3:
+            raise RuntimeError(
+                "needlestack requires a SQLite library compiled in 'serialized' "
+                "threading mode (sqlite3.threadsafety == 3) because the Store "
+                "connection is shared read-only across threads; this Python's "
+                f"sqlite3 module reports threadsafety={sqlite3.threadsafety}, "
+                "which cannot safely support that."
+            )
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
         self._embedding_cache: tuple[list[int], list[str], "np.ndarray"] | None = None
+        self._roots_cache: list[dict] | None = None
 
     def _migrate(self) -> None:
         """Bring the DB to the current schema, and create/repair the FTS index.
@@ -176,18 +197,6 @@ class Store:
         )
         self.conn.commit()
 
-    def get_hash(self, path: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT hash FROM images WHERE path = ?", (path,)
-        ).fetchone()
-        return row[0] if row else None
-
-    def get_caption_version(self, path: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT caption_version FROM images WHERE path = ?", (path,)
-        ).fetchone()
-        return row[0] if row else None
-
     def get_hash_and_version(self, path: str) -> tuple[str | None, str | None]:
         """Fetch hash + caption_version in one query — the indexer's per-image skip
         check needs both, and one row fetch beats two on a large already-indexed tree."""
@@ -211,7 +220,13 @@ class Store:
         caption_version: str = "",
         view: str = "",
         exif_json: str = "",
+        commit: bool = True,
     ) -> None:
+        """commit=False lets a caller doing many upserts in a row (bulk indexing)
+        batch commits instead of fsyncing after every single row -- WAL mode
+        already gives durable, isolated writes without a commit-per-row; the
+        caller is responsible for eventually committing (directly on .conn, or
+        via a later commit=True call)."""
         self.conn.execute(
             """
             INSERT INTO images (
@@ -237,7 +252,8 @@ class Store:
             (path, hash_, caption, reporting_marks, equipment, structured_json,
              int(is_railroad), caption_version, view, exif_json, _enc(embedding), thumbnail),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         self.invalidate_embedding_cache()
 
     def get_exif(self, path: str) -> str | None:
@@ -276,13 +292,24 @@ class Store:
         ids = []
         paths = []
         vecs = []
+        skipped = 0
         for r in rows:
             vec = _try_dec(r[2], r[1])
             if vec is None:
+                skipped += 1
                 continue
             vecs.append(vec)
             ids.append(r[0])
             paths.append(r[1])
+        if skipped:
+            # _try_dec already warned per-row; this summary line is what makes
+            # "the matrix search()/doctor.py just got is missing N embeddings"
+            # visible from a single call site instead of only from scattered
+            # per-row log lines a caller would have to notice and count itself.
+            _log.warning(
+                "all_embeddings: skipped %d corrupt embedding(s) out of %d rows",
+                skipped, len(rows),
+            )
         if not ids:
             return [], [], np.empty((0, _embedding_dim()), dtype=np.float32)
         matrix = np.stack(vecs)
@@ -348,15 +375,42 @@ class Store:
         )
         self.conn.commit()
 
+    @staticmethod
+    def _is_verifiably_missing(path: str) -> bool:
+        """True only if `path` is absolute AND doesn't exist.
+
+        A relative stored path can't be safely judged "missing" -- it would be
+        resolved against whatever the *current* process's cwd happens to be,
+        which has no guaranteed relationship to the cwd `needlestack index` was
+        run from. Indexing now always stores absolute paths (see cli.py's
+        `resolve_path=True`), so this only matters for rows written before that
+        fix; treating an unverifiable relative path as "present" rather than
+        "missing" means a stale cwd can never cause files to be silently and
+        permanently deleted from the index.
+        """
+        p = Path(path)
+        if not p.is_absolute():
+            return False
+        try:
+            return not p.exists()
+        except OSError as e:
+            # A transient OS-level error (encoding issue, permission denial,
+            # unmounted network share) is not proof the file is gone -- treat
+            # it as "can't verify, so don't delete" rather than letting the
+            # exception propagate and abort count_missing/remove_missing for
+            # every other row too.
+            _log.warning("Could not check existence of %s: %s", path, e)
+            return False
+
     def count_missing(self) -> int:
         """Count indexed entries whose files no longer exist, without deleting them."""
         rows = self.conn.execute("SELECT path FROM images").fetchall()
-        return sum(1 for (path,) in rows if not Path(path).exists())
+        return sum(1 for (path,) in rows if self._is_verifiably_missing(path))
 
     def remove_missing(self) -> int:
         """Delete index entries whose files no longer exist. Returns count removed."""
         paths = self.conn.execute("SELECT id, path FROM images").fetchall()
-        missing_ids = [row[0] for row in paths if not Path(row[1]).exists()]
+        missing_ids = [row[0] for row in paths if self._is_verifiably_missing(row[1])]
         if missing_ids:
             placeholders = ",".join("?" * len(missing_ids))
             self.conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", missing_ids)
@@ -368,23 +422,32 @@ class Store:
         """Return all indexed roots as [{"path": str, "domain": str}].
 
         Falls back to the legacy indexed_root / indexed_domain keys so old
-        single-root databases work without migration.
+        single-root databases work without migration. Cached in-process (like
+        all_embeddings()) since this data only changes via set_roots()/add_root(),
+        but was previously re-read from config and re-JSON-parsed on every
+        /search and /expand request.
         """
+        if self._roots_cache is not None:
+            return self._roots_cache
         raw = self.get_config("indexed_roots")
         if raw:
             try:
-                return _json.loads(raw)
+                self._roots_cache = _json.loads(raw)
             except _json.JSONDecodeError:
                 _log.warning("indexed_roots config is malformed JSON — treating as empty")
-                return []
+                self._roots_cache = []
+            return self._roots_cache
         root = self.get_config("indexed_root")
         if root:
             domain = self.get_config("indexed_domain", "railroad")
-            return [{"path": root, "domain": domain}]
-        return []
+            self._roots_cache = [{"path": root, "domain": domain}]
+            return self._roots_cache
+        self._roots_cache = []
+        return self._roots_cache
 
     def set_roots(self, roots: list[dict]) -> None:
         self.set_config("indexed_roots", _json.dumps(roots))
+        self._roots_cache = None
 
     def add_root(self, path: str, domain: str) -> None:
         """Register a root directory. Updates domain if root is already known."""
