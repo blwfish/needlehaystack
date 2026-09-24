@@ -325,7 +325,13 @@ def test_remove_missing_deletes_nonexistent_paths(store, tmp_path):
     real = tmp_path / "real.jpg"
     real.write_bytes(b"x")
     store.upsert(str(real), "h1", "caption", fake_embedding(), b"t")
-    store.upsert("/nonexistent/ghost.jpg", "h2", "caption", fake_embedding(1), b"t")
+    # Genuinely absolute on every platform (derived from tmp_path, not a
+    # hardcoded POSIX literal) -- a bare "/nonexistent/..." string is NOT
+    # Path.is_absolute() on Windows without a drive letter, which made this
+    # test fail on Windows CI once remove_missing() started requiring
+    # is_absolute() as part of the relative-path data-loss guard.
+    ghost = tmp_path / "nonexistent" / "ghost.jpg"
+    store.upsert(str(ghost), "h2", "caption", fake_embedding(1), b"t")
     assert store.count() == 2
 
     removed = store.remove_missing()
@@ -346,13 +352,19 @@ def test_remove_missing_empty_index(store):
     assert store.remove_missing() == 0
 
 
-def test_remove_missing_does_not_delete_on_path_exists_oserror(store, monkeypatch):
+def test_remove_missing_does_not_delete_on_path_exists_oserror(store, tmp_path, monkeypatch):
     """Regression: Path.exists() raising an OS-level error (encoding issue,
     permission denial, unmounted share) is not proof the file is gone -- it
     must not propagate and abort the whole batch, and must not be treated as
     "missing" either."""
     from pathlib import Path
-    store.upsert("/some/absolute/path.jpg", "h1", "caption", fake_embedding(), b"t")
+    # tmp_path is genuinely absolute on every platform -- a hardcoded POSIX
+    # literal like "/some/absolute/path.jpg" is NOT Path.is_absolute() on
+    # Windows without a drive letter, which would make this test pass via the
+    # is_absolute() short-circuit instead of actually exercising the OSError
+    # path it's meant to test.
+    p = str(tmp_path / "some" / "absolute" / "path.jpg")
+    store.upsert(p, "h1", "caption", fake_embedding(), b"t")
 
     def _raise(self):
         raise OSError("simulated stat failure")
